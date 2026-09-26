@@ -12,6 +12,11 @@ updated: 2026-09-26
 
 # Verification
 
+> **Superseded in part.** This records S5 as it stood at 124 tests, before
+> amendments A-05…A-09. The suite is now larger and the config path, adapter
+> rules and install story have all changed. The cycle index lists re-verification
+> as the next action; §5's defect log and §6's residual risks still stand.
+
 Reproduce everything below with one command from the repository root:
 
 ```

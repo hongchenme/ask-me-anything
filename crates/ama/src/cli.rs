@@ -282,7 +282,7 @@ fn integration_status() -> String {
             "zsh" => ("zsh", "~/.zshrc"),
             _ => ("bash", "~/.bashrc"),
         };
-        format!("not loaded -- add: eval \"$(ama init {name})\" to {rc}")
+        format!("not loaded -- run: ama setup   (wires {rc} for {name})")
     }
 }
 
@@ -322,6 +322,7 @@ fn which(program: &str) -> bool {
 /// Every step is idempotent, so re-running after an upgrade is safe.
 fn setup(dry_run: bool) -> ExitCode {
     let mut plan: Vec<String> = Vec::new();
+    let mut unsupported_shell = false;
     let note = |plan: &mut Vec<String>, s: String| plan.push(s);
 
     let exe = match std::env::current_exe() {
@@ -354,7 +355,13 @@ fn setup(dry_run: bool) -> ExitCode {
             Err(e) => {
                 return fail(
                     EXIT_CONFIG,
-                    &format!("could not create {}: {e}", trigger.display()),
+                    &format!(
+                        "could not create {}: {e}\n\nThe `@@` alias lives beside the \
+                         ama binary, so that directory must be writable. Install \
+                         somewhere you own and re-run:\n  AMA_PREFIX=~/.local/bin \
+                         ./install.sh",
+                        trigger.display()
+                    ),
                 );
             }
         }
@@ -394,17 +401,33 @@ fn setup(dry_run: bool) -> ExitCode {
                 shellinit::Shell::Zsh => (std::path::PathBuf::from(&home).join(".zshrc"), "zsh"),
             };
             let existing = std::fs::read_to_string(&rc).unwrap_or_default();
-            let on_path = std::env::var("PATH")
-                .is_ok_and(|p| std::env::split_paths(&p).any(|d| d == bin_dir));
-            let path_line = format!("export PATH=\"{}:$PATH\"", bin_dir.display());
-            let eval_line = format!("eval \"$(ama init {name})\"");
+
+            // Absolute path, not a bare `ama`. An rc runs before PATH is
+            // necessarily set up: Debian/Ubuntu's ~/.profile sources
+            // ~/.bashrc *before* it adds ~/.local/bin, so a bare `ama` here
+            // makes `eval` a silent no-op in every login shell and the hook
+            // never loads. The old install.sh used an absolute path; losing
+            // it was a regression.
+            let eval_line = format!("eval \"$({} init {name})\"", sh_quote(&exe));
+
+            // The PATH line is decided from the rc's contents alone, never
+            // from this process's PATH -- those are different moments, and
+            // the hook needs bare `@@` and `ama session reset` resolvable at
+            // runtime (see ama.bash) regardless of how setup was invoked.
+            let path_line = format!("export PATH={}:\"$PATH\"", sh_quote(&bin_dir));
 
             let mut add: Vec<String> = Vec::new();
-            if !on_path && !existing.contains(&path_line) {
+            if !existing.contains(&path_line) {
                 add.push(path_line);
             }
-            if !existing.contains(&format!("ama init {name}")) {
+            if !existing.contains(&format!("init {name})")) {
                 add.push(eval_line);
+            }
+            // Emit as one block or not at all: appending them in separate
+            // runs could land PATH *below* the eval that needs it, which no
+            // later run would repair.
+            if add.len() == 1 && !existing.is_empty() {
+                add.clear();
             }
 
             if add.is_empty() {
@@ -432,15 +455,24 @@ fn setup(dry_run: bool) -> ExitCode {
                 }
             }
         }
-        None => note(
-            &mut plan,
-            format!(
-                "skip  $SHELL is not bash or zsh, so no rc file was touched.\n      \
-                 Add this to your shell's startup file yourself:\n        \
-                 export PATH=\"{}:$PATH\"\n        eval \"$(ama init bash)\"",
-                bin_dir.display()
-            ),
-        ),
+        // The Enter trigger is a bash/zsh readline/ZLE hook: there is no
+        // fish or nushell equivalent to hand out, and pasting
+        // `eval "$(...)"` into config.fish is a syntax error. Saying so and
+        // pointing at the shell-neutral command beats promising `@@` will
+        // work and letting the user find out otherwise.
+        None => {
+            unsupported_shell = true;
+            note(
+                &mut plan,
+                format!(
+                    "skip  $SHELL is not bash or zsh, so no rc file was touched.\n      \
+                     The `@@` Enter trigger is bash/zsh only -- it is a readline/ZLE\n      \
+                     hook with no equivalent in other shells. `ama ask -- <question>`\n      \
+                     works everywhere; put {} on your PATH to use it.",
+                    bin_dir.display()
+                ),
+            )
+        }
     }
 
     for line in &plan {
@@ -449,10 +481,25 @@ fn setup(dry_run: bool) -> ExitCode {
     if dry_run {
         println!("\nDry run — nothing was changed.");
     } else {
-        println!("\nDone. Open a new shell, then try:  @@ what is this project about");
+        println!();
+        if unsupported_shell {
+            println!("Done. `ama ask -- what is this project about` works in any shell.");
+        } else {
+            println!("Done. Open a new shell, then try:  @@ what is this project about");
+        }
         println!("`ama doctor` will confirm the integration is live.");
     }
     ExitCode::from(EXIT_OK)
+}
+
+/// Single-quote a path for a shell rc line.
+///
+/// The same reasoning as `__ama_sq`: inside `'…'` every byte is literal and
+/// `'` is the only character that can end the quote. A prefix containing a
+/// space, `$`, a backtick or a quote would otherwise expand or break on
+/// every shell start.
+fn sh_quote(p: &std::path::Path) -> String {
+    format!("'{}'", p.to_string_lossy().replace('\'', "'\\''"))
 }
 
 #[cfg(unix)]

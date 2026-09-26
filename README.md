@@ -17,15 +17,21 @@ BYOA — bring your own agent. `ama` runs whatever CLI you already have
 ```sh
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/hongchenme/ask-me-anything/releases/latest/download/ama-installer.sh | sh
-ama setup
+~/.local/bin/ama setup
 ```
+
+The second line uses the full path because the installer has only just put
+`ama` there — your current shell does not know about it yet.
 
 `ama setup` creates the `@@` alias, writes a starter config, and wires up your
 `.bashrc` or `.zshrc`. Open a new shell; `ama doctor` tells you what it found.
-Run it again any time — it is idempotent. `ama setup --dry-run` shows the plan
+Re-run it any time — it is idempotent — and `ama setup --dry-run` shows the plan
 without touching anything.
 
 From a clone instead: `./install.sh`.
+
+The `@@` trigger is bash and zsh only: it is a readline/ZLE hook, and other
+shells have no equivalent. `ama ask -- <question>` works in any shell.
 
 ## Use
 

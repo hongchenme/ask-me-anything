@@ -608,7 +608,20 @@ fn setup_env() -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().expect("tempdir");
     let bin_dir = dir.path().join("bin");
     std::fs::create_dir_all(&bin_dir).expect("bin dir");
-    std::fs::copy(assert_cmd::cargo::cargo_bin("ama"), bin_dir.join("ama")).expect("copy ama");
+    let dest = bin_dir.join("ama");
+    std::fs::copy(assert_cmd::cargo::cargo_bin("ama"), &dest).expect("copy ama");
+    // A freshly written executable can briefly refuse to exec with ETXTBSY
+    // (os error 26) under a loaded machine; the same race the `@@` alias
+    // test hit. Settle here so every setup test is spared it.
+    for _ in 0..50 {
+        match std::process::Command::new(&dest).arg("--version").output() {
+            Ok(_) => break,
+            Err(e) if e.raw_os_error() == Some(26) => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            Err(e) => panic!("copied ama is not runnable: {e}"),
+        }
+    }
     (dir, bin_dir)
 }
 
@@ -642,16 +655,13 @@ fn setup_creates_the_trigger_alias_config_and_rc() {
     );
 
     let rc = std::fs::read_to_string(d.path().join(".bashrc")).expect("rc");
-    assert!(
-        rc.contains("ama init bash"),
-        "rc wires the integration: {rc}"
-    );
+    assert!(rc.contains("init bash)"), "rc wires the integration: {rc}");
     assert!(
         rc.contains("export PATH="),
         "rc puts the prefix on PATH: {rc}"
     );
     let path_at = rc.find("export PATH=").expect("path line");
-    let eval_at = rc.find("eval \"$(ama init").expect("eval line");
+    let eval_at = rc.find("eval \"$(").expect("eval line");
     assert!(
         path_at < eval_at,
         "PATH must come before the eval that needs it"
@@ -665,11 +675,7 @@ fn setup_is_idempotent() {
     setup_cmd(d.path(), &bin).arg("setup").assert().success();
 
     let rc = std::fs::read_to_string(d.path().join(".bashrc")).expect("rc");
-    assert_eq!(
-        rc.matches("ama init bash").count(),
-        1,
-        "one eval line: {rc}"
-    );
+    assert_eq!(rc.matches("init bash)").count(), 1, "one eval line: {rc}");
     assert_eq!(rc.matches("export PATH=").count(), 1, "one PATH line: {rc}");
 }
 
@@ -728,5 +734,133 @@ fn setup_refreshes_a_stale_alias_after_an_upgrade() {
         bin.join("@@").read_link().expect("symlink"),
         bin.join("ama"),
         "a stale alias is worse than none; setup must repoint it"
+    );
+}
+
+/// C1: an rc runs before PATH is necessarily set up. Debian/Ubuntu's
+/// ~/.profile sources ~/.bashrc *before* adding ~/.local/bin, so a bare
+/// `ama` in the eval line makes it a silent no-op in every login shell and
+/// the hook never loads. The absolute path is what makes it work regardless.
+#[test]
+fn the_rc_eval_line_does_not_depend_on_path() {
+    let (d, bin) = setup_env();
+    // Deliberately run with bin_dir already on PATH -- the exact condition
+    // that used to suppress the PATH line and leave a bare `ama`.
+    let mut c = Command::new(bin.join("ama"));
+    c.env("HOME", d.path())
+        .env("SHELL", "/bin/bash")
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .env_remove("AMA_CONFIG");
+    c.arg("setup").assert().success();
+
+    let rc = std::fs::read_to_string(d.path().join(".bashrc")).expect("rc");
+    assert!(
+        rc.contains(&format!(
+            "$({}/ama' init bash)",
+            bin.display().to_string().trim_end_matches('/')
+        )) || rc.contains("/ama' init bash)"),
+        "eval must name the binary by absolute path, not bare `ama`: {rc}"
+    );
+    assert!(
+        rc.contains("export PATH="),
+        "the PATH line is written regardless: {rc}"
+    );
+}
+
+/// I1: the two lines must be emitted together. Written in separate runs they
+/// could land PATH *below* the eval that needs it, and no later run repairs
+/// it because both are then "already present".
+#[test]
+fn a_second_setup_never_appends_path_below_the_eval() {
+    let (d, bin) = setup_env();
+    let run = |on_path: bool| {
+        let mut c = Command::new(bin.join("ama"));
+        c.env("HOME", d.path())
+            .env("SHELL", "/bin/bash")
+            .env_remove("AMA_CONFIG");
+        c.env(
+            "PATH",
+            if on_path {
+                format!("{}:/usr/bin:/bin", bin.display())
+            } else {
+                "/usr/bin:/bin".into()
+            },
+        );
+        c.arg("setup").assert().success();
+    };
+    run(true);
+    run(false);
+
+    let rc = std::fs::read_to_string(d.path().join(".bashrc")).expect("rc");
+    assert_eq!(rc.matches("export PATH=").count(), 1, "one PATH line: {rc}");
+    assert_eq!(rc.matches("init bash)").count(), 1, "one eval line: {rc}");
+    let path_at = rc.find("export PATH=").expect("path");
+    let eval_at = rc.find("eval \"$(").expect("eval");
+    assert!(path_at < eval_at, "PATH must still precede the eval: {rc}");
+}
+
+#[test]
+fn setup_preserves_existing_rc_content() {
+    let (d, bin) = setup_env();
+    let original = "# my careful shell setup\nexport EDITOR=vim\nalias ll='ls -la'\n";
+    std::fs::write(d.path().join(".bashrc"), original).expect("seed rc");
+
+    setup_cmd(d.path(), &bin).arg("setup").assert().success();
+
+    let rc = std::fs::read_to_string(d.path().join(".bashrc")).expect("rc");
+    assert!(
+        rc.starts_with(original),
+        "existing rc must be appended to, never rewritten: {rc}"
+    );
+}
+
+#[test]
+fn setup_wires_zshrc_for_a_zsh_user() {
+    let (d, bin) = setup_env();
+    let mut c = Command::new(bin.join("ama"));
+    c.env("HOME", d.path())
+        .env("SHELL", "/bin/zsh")
+        .env("PATH", "/usr/bin:/bin")
+        .env_remove("AMA_CONFIG");
+    c.arg("setup").assert().success();
+
+    let rc = std::fs::read_to_string(d.path().join(".zshrc")).expect("zshrc");
+    assert!(
+        rc.contains("init zsh)"),
+        "zsh gets the zsh integration: {rc}"
+    );
+    assert!(
+        !d.path().join(".bashrc").exists(),
+        "and bash's rc is untouched"
+    );
+}
+
+/// I5: the Enter trigger is bash/zsh only. Telling a fish user to paste
+/// `eval "$(...)"` into config.fish -- which is a syntax error there -- and
+/// then promising `@@` will work is worse than saying nothing.
+#[test]
+fn setup_is_honest_with_an_unsupported_shell() {
+    let (d, bin) = setup_env();
+    let out = Command::new(bin.join("ama"))
+        .env("HOME", d.path())
+        .env("SHELL", "/usr/bin/fish")
+        .env("PATH", "/usr/bin:/bin")
+        .env_remove("AMA_CONFIG")
+        .arg("setup")
+        .output()
+        .expect("run");
+    let text = String::from_utf8_lossy(&out.stdout);
+
+    assert!(
+        text.contains("ama ask"),
+        "must point at the shell-neutral fallback: {text}"
+    );
+    assert!(
+        !text.contains("try:  @@"),
+        "must not promise a trigger that cannot fire in fish: {text}"
+    );
+    assert!(
+        !d.path().join(".bashrc").exists(),
+        "no rc was invented for fish"
     );
 }

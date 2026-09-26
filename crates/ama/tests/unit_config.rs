@@ -123,7 +123,7 @@ fn write_cfg(body: &str) -> (tempfile::TempDir, std::path::PathBuf) {
 }
 
 #[test]
-fn loads_the_readme_config_verbatim() {
+fn a_bare_string_line_still_gains_the_one_shot_flag() {
     let (_d, p) = write_cfg("agent: claude --model opus --effort high\n");
     let cfg = Config::load(&p).expect("load");
     assert_eq!(cfg.max_context_lines, 200, "default cap");
@@ -231,4 +231,45 @@ fn an_empty_agent_is_a_configuration_error() {
 fn an_empty_file_is_a_configuration_error_not_a_panic() {
     let (_d, p) = write_cfg("");
     assert!(Config::load(&p).is_err());
+}
+
+/// C2: `normalize` can *create* a `{prompt}` placeholder -- agy's adapter
+/// does -- so the bare-string form must scan for it too. It used to hardcode
+/// `Stdin`, which sent agy the literal text `{prompt}` and discarded the
+/// user's question.
+#[test]
+fn a_bare_string_agy_also_takes_its_prompt_as_an_argument() {
+    let (_d, p) = write_cfg("agent: agy\n");
+    let spec = Config::load(&p).expect("load").agent_spec().expect("spec");
+    assert_eq!(spec.argv, v("agy -p {prompt}"));
+    assert_eq!(
+        spec.prompt_via,
+        PromptVia::Arg(2),
+        "the bare-string form must resolve the placeholder exactly like command:"
+    );
+}
+
+#[test]
+fn both_config_forms_resolve_an_agent_identically() {
+    for text in [
+        "agent: agy --effort low\n",
+        "agent:\n  command: [agy, --effort, low]\n",
+    ] {
+        let (_d, p) = write_cfg(text);
+        let spec = Config::load(&p).expect("load").agent_spec().expect("spec");
+        assert_eq!(spec.argv, v("agy --effort low -p {prompt}"), "{text}");
+        assert_eq!(spec.prompt_via, PromptVia::Arg(4), "{text}");
+    }
+}
+
+#[test]
+fn adapter_false_still_honours_a_hand_written_placeholder() {
+    let (_d, p) = write_cfg("agent:\n  command: [agy, -p, \"{prompt}\"]\n  adapter: false\n");
+    let spec = Config::load(&p).expect("load").agent_spec().expect("spec");
+    assert_eq!(spec.argv, v("agy -p {prompt}"), "nothing inserted");
+    assert_eq!(
+        spec.prompt_via,
+        PromptVia::Arg(2),
+        "the user's own placeholder still resolves"
+    );
 }

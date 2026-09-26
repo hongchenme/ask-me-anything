@@ -5,12 +5,16 @@
 #
 #   curl --proto '=https' --tlsv1.2 -LsSf \
 #     https://github.com/hongchenme/ask-me-anything/releases/latest/download/ama-installer.sh | sh
-#   ama setup
+#   ~/.local/bin/ama setup
 #
 # This script is the from-source equivalent: it builds, copies the binary into
 # place, and then hands off to `ama setup` for everything else — the `@@`
 # alias, a starter config, and your shell rc. Keeping that logic in the binary
 # means the curl path and the clone path cannot drift apart.
+# Note: arguments are forwarded to `ama setup`, so `./install.sh --dry-run`
+# still builds and installs the binary for real and only previews the setup
+# step. Use `ama setup --dry-run` on an already-installed ama for a true
+# no-op preview.
 set -euo pipefail
 
 cd "$(dirname "$0")"

@@ -15,3 +15,8 @@ installers = ["shell"]
 # build could offer `ama ask` but never `@@`.
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"]
+
+# Match install.sh's default rather than cargo-dist's `~/.cargo/bin`. The
+# person the curl install exists for may have no Rust toolchain at all, and
+# telling them to `source ~/.cargo/env` to finish is a strange first step.
+install-path = "~/.local/bin"

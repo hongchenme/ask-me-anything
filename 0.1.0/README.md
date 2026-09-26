@@ -24,7 +24,7 @@ terminal, to the user's own agent CLI and streams the answer back inline.
 | **Risk tier** | R1 (see [risk register](02-discovery-and-risk.md#4-risk-register)) |
 | **Next action** | Re-verify after amendments A-05…A-09, then owner decides on release |
 | **Blockers** | None |
-| **Evidence** | `./check.sh` green · 133 tests (110 at S4, +14 from the whole-branch review's fix wave, +9 from the A-05…A-09 refactor) · NFR-01 measured at 7.0 ms median vs a 50 ms budget |
+| **Evidence** | `./check.sh` green · 143 tests (110 at S4, +14 from the whole-branch review's fix wave, +19 from the A-05…A-09 refactor and its review) · NFR-01 measured at 7.0 ms median vs a 50 ms budget |
 
 ## Artifact map
 

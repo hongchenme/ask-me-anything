@@ -86,6 +86,23 @@ pub fn config_path() -> PathBuf {
     PathBuf::from(home).join(".ama").join("config.yml")
 }
 
+/// Build a spec from an already-normalised argv.
+///
+/// The placeholder is located *after* normalisation, and this is shared by
+/// both config forms rather than duplicated. Both details are load-bearing:
+/// inserting a one-shot token shifts every later index, and an adapter can
+/// *create* the placeholder -- `agy` does, because its `-p` takes the prompt
+/// as a value and it never reads stdin. When only the structured arm scanned
+/// for it, `agent: agy` as a bare string sent the agent the literal text
+/// `{prompt}` and threw the user's question away.
+fn spec_from(argv: Vec<String>) -> AgentSpec {
+    let prompt_via = argv
+        .iter()
+        .position(|a| a.contains("{prompt}"))
+        .map_or(PromptVia::Stdin, PromptVia::Arg);
+    AgentSpec { argv, prompt_via }
+}
+
 impl Config {
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         if !path.exists() {
@@ -122,28 +139,13 @@ impl Config {
                 if argv.is_empty() {
                     return Err(ConfigError::EmptyAgent);
                 }
-                Ok(AgentSpec {
-                    argv: adapter::normalize(&argv),
-                    prompt_via: PromptVia::Stdin,
-                })
+                Ok(spec_from(adapter::normalize(&argv)))
             }
-            AgentConfig::Structured { command, adapter } => {
-                let argv = if *adapter {
-                    adapter::normalize(command)
-                } else {
-                    command.clone()
-                };
-                // Locate the placeholder *after* normalisation: inserting a
-                // one-shot token shifts every later index.
-                let via = argv
-                    .iter()
-                    .position(|a| a.contains("{prompt}"))
-                    .map_or(PromptVia::Stdin, PromptVia::Arg);
-                Ok(AgentSpec {
-                    argv,
-                    prompt_via: via,
-                })
-            }
+            AgentConfig::Structured { command, adapter } => Ok(spec_from(if *adapter {
+                adapter::normalize(command)
+            } else {
+                command.clone()
+            })),
         }
     }
 }
