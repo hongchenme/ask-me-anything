@@ -42,6 +42,16 @@ enum Cmd {
     },
     /// Report configuration and integration state.
     Doctor,
+    /// Create the `@@` alias, a starter config, and wire up your shell.
+    ///
+    /// This is what makes a `curl` install work with no git clone: cargo-dist
+    /// ships only `ama`, because rustc rejects a crate named `@@`, so the
+    /// alias has to be made after the fact.
+    Setup {
+        /// Print what would change and exit.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -77,6 +87,7 @@ pub fn run() -> ExitCode {
             Err(e) => fail(EXIT_AGENT, &format!("could not reset session: {e}")),
         },
         Cmd::Doctor => doctor(),
+        Cmd::Setup { dry_run } => setup(dry_run),
     }
 }
 
@@ -298,6 +309,196 @@ fn which(program: &str) -> bool {
     }
     std::env::var("PATH")
         .is_ok_and(|paths| std::env::split_paths(&paths).any(|d| is_executable(&d.join(program))))
+}
+
+/// `ama setup` — everything a fresh install still needs after the binary
+/// lands on disk (A-07).
+///
+/// `cargo dist` ships only `ama`: rustc rejects a crate named `@@`, so the
+/// trigger alias cannot be a second `[[bin]]` and has to be created here.
+/// That is also why this exists as a subcommand rather than a script — after
+/// `curl … | sh` there is no repository to run a script from.
+///
+/// Every step is idempotent, so re-running after an upgrade is safe.
+fn setup(dry_run: bool) -> ExitCode {
+    let mut plan: Vec<String> = Vec::new();
+    let note = |plan: &mut Vec<String>, s: String| plan.push(s);
+
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => return fail(EXIT_CONFIG, &format!("cannot locate the ama binary: {e}")),
+    };
+    let Some(bin_dir) = exe.parent().map(std::path::Path::to_path_buf) else {
+        return fail(EXIT_CONFIG, "the ama binary has no parent directory");
+    };
+    let trigger = bin_dir.join("@@");
+
+    // 1. The `@@` alias.
+    let alias_ok = trigger.read_link().map(|t| t == exe).unwrap_or(false);
+    if alias_ok {
+        note(
+            &mut plan,
+            format!("ok    {} already points at ama", trigger.display()),
+        );
+    } else if dry_run {
+        note(
+            &mut plan,
+            format!("would symlink {} -> {}", trigger.display(), exe.display()),
+        );
+    } else {
+        match link_trigger(&exe, &trigger) {
+            Ok(()) => note(
+                &mut plan,
+                format!("made  {} -> {}", trigger.display(), exe.display()),
+            ),
+            Err(e) => {
+                return fail(
+                    EXIT_CONFIG,
+                    &format!("could not create {}: {e}", trigger.display()),
+                );
+            }
+        }
+    }
+
+    // 2. A starter config, never overwriting one that exists.
+    let cfg = config::config_path();
+    if cfg.exists() {
+        note(
+            &mut plan,
+            format!("ok    {} already exists, left alone", cfg.display()),
+        );
+    } else if dry_run {
+        note(
+            &mut plan,
+            format!("would write a starter config to {}", cfg.display()),
+        );
+    } else {
+        match write_starter_config(&cfg) {
+            Ok(()) => note(&mut plan, format!("wrote {}", cfg.display())),
+            Err(e) => {
+                return fail(
+                    EXIT_CONFIG,
+                    &format!("could not write {}: {e}", cfg.display()),
+                );
+            }
+        }
+    }
+
+    // 3. The shell rc: PATH first, then the integration.
+    let shell = shellinit::Shell::parse(&std::env::var("SHELL").unwrap_or_default());
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    match shell {
+        Some(sh) => {
+            let (rc, name) = match sh {
+                shellinit::Shell::Bash => (std::path::PathBuf::from(&home).join(".bashrc"), "bash"),
+                shellinit::Shell::Zsh => (std::path::PathBuf::from(&home).join(".zshrc"), "zsh"),
+            };
+            let existing = std::fs::read_to_string(&rc).unwrap_or_default();
+            let on_path = std::env::var("PATH")
+                .is_ok_and(|p| std::env::split_paths(&p).any(|d| d == bin_dir));
+            let path_line = format!("export PATH=\"{}:$PATH\"", bin_dir.display());
+            let eval_line = format!("eval \"$(ama init {name})\"");
+
+            let mut add: Vec<String> = Vec::new();
+            if !on_path && !existing.contains(&path_line) {
+                add.push(path_line);
+            }
+            if !existing.contains(&format!("ama init {name}")) {
+                add.push(eval_line);
+            }
+
+            if add.is_empty() {
+                note(
+                    &mut plan,
+                    format!("ok    {} already wired for {name}", rc.display()),
+                );
+            } else if dry_run {
+                for l in &add {
+                    note(&mut plan, format!("would add to {}: {l}", rc.display()));
+                }
+            } else {
+                match append_rc(&rc, &add) {
+                    Ok(()) => {
+                        for l in &add {
+                            note(&mut plan, format!("added to {}: {l}", rc.display()));
+                        }
+                    }
+                    Err(e) => {
+                        return fail(
+                            EXIT_CONFIG,
+                            &format!("could not update {}: {e}", rc.display()),
+                        );
+                    }
+                }
+            }
+        }
+        None => note(
+            &mut plan,
+            format!(
+                "skip  $SHELL is not bash or zsh, so no rc file was touched.\n      \
+                 Add this to your shell's startup file yourself:\n        \
+                 export PATH=\"{}:$PATH\"\n        eval \"$(ama init bash)\"",
+                bin_dir.display()
+            ),
+        ),
+    }
+
+    for line in &plan {
+        println!("{line}");
+    }
+    if dry_run {
+        println!("\nDry run — nothing was changed.");
+    } else {
+        println!("\nDone. Open a new shell, then try:  @@ what is this project about");
+        println!("`ama doctor` will confirm the integration is live.");
+    }
+    ExitCode::from(EXIT_OK)
+}
+
+#[cfg(unix)]
+fn link_trigger(exe: &std::path::Path, trigger: &std::path::Path) -> std::io::Result<()> {
+    // Replace rather than fail: an upgrade moves the binary, and a stale
+    // symlink is worse than no symlink.
+    match std::fs::remove_file(trigger) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    std::os::unix::fs::symlink(exe, trigger)
+}
+
+#[cfg(not(unix))]
+fn link_trigger(exe: &std::path::Path, trigger: &std::path::Path) -> std::io::Result<()> {
+    std::fs::copy(exe, trigger).map(|_| ())
+}
+
+fn write_starter_config(cfg: &std::path::Path) -> std::io::Result<()> {
+    if let Some(dir) = cfg.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(
+        cfg,
+        "# Your agent. Any CLI that reads a prompt on stdin and writes an\n\
+         # answer to stdout works. ama inserts the one-shot flag for agents\n\
+         # it knows (claude, codex, agy, ollama); add `adapter: false` to\n\
+         # stop it touching your argv.\n\
+         agent:\n  command: [claude]\n\n\
+         # Lines of terminal scrollback sent as context.\n\
+         max_context_lines: 200\n",
+    )
+}
+
+fn append_rc(rc: &std::path::Path, lines: &[String]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(rc)?;
+    writeln!(f, "\n# ama -- ask me anything")?;
+    for l in lines {
+        writeln!(f, "{l}")?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

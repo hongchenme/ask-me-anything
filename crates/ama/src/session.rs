@@ -71,7 +71,7 @@ pub struct Turn {
 
 fn sessions_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".qmx2").join("sessions")
+    PathBuf::from(home).join(".ama").join("sessions")
 }
 
 pub fn transcript_path(key: &SessionKey) -> PathBuf {

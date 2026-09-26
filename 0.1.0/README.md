@@ -19,12 +19,12 @@ terminal, to the user's own agent CLI and streams the answer back inline.
 
 | | |
 |---|---|
-| **Stage** | S5 — verify and evaluate |
+| **Stage** | S5 — verify and evaluate (re-entered after the A-05…A-09 refactor) |
 | **Gate** | SG4 passed. SG5 pending owner review of the verification record |
 | **Risk tier** | R1 (see [risk register](02-discovery-and-risk.md#4-risk-register)) |
-| **Next action** | Owner reviews [07-verification.md](07-verification.md) and decides on release |
+| **Next action** | Re-verify after amendments A-05…A-09, then owner decides on release |
 | **Blockers** | None |
-| **Evidence** | `./check.sh` green · 124 tests (110 at the end of S4, plus 14 from the whole-branch review's fix wave) · NFR-01 measured at 7.0 ms median vs a 50 ms budget |
+| **Evidence** | `./check.sh` green · 133 tests (110 at S4, +14 from the whole-branch review's fix wave, +9 from the A-05…A-09 refactor) · NFR-01 measured at 7.0 ms median vs a 50 ms budget |
 
 ## Artifact map
 
@@ -62,6 +62,11 @@ scope changes.
 | A-01 | 2026-09-26 | **REQ-28 added.** README example 3 is `clear && @@ show me the joke of the day`, so the trigger is not always at the start of the line — an assumption every capture requirement had made. ADR-006 defines the recognition order. | One extra branch in the shell hook and a unit-tested split function. No architecture, tier, or other requirement affected. |
 | A-03 | 2026-09-26 | **ADR-006 rule 2 inverted: the earliest trigger wins.** Task 1's review showed the original "last operator" rule was incoherent — `@@ compare a && @@ b` was one prompt, but a leading `clear && ` made the same text split at the *second* trigger, pushing `@@ compare a &&` back into the user's buffer as executable text. Rule 1 exists so the earliest trigger wins, so the old rule 2 contradicted its own decision. | One branch reimplemented with parameter expansion instead of a regex, plus a fixture. Found by review, not shipped. |
 | A-04 | 2026-09-26 | **REQ-11's statement amended: context is the whole visible pane when the current question is the only trigger on it.** The statement said "from the first trigger line to the bottom", but the question is already echoed on the pane when `ama` captures it, so its own acceptance criterion (`ls /nonexistent`, then `@@ …`) needed content from *above* that line and failed verbatim. Found by the whole-branch review; the behaviour was fixed rather than the requirement re-scoped, since ADR-002 justifies the tmux path as exactly this case. | One branch in `context::select_context`, four unit fixtures, and an e2e test running the criterion verbatim. No architecture, tier, or other requirement affected. |
+| A-05 | 2026-09-26 | **Project renamed `question-mark-x2` → `ask-me-anything`.** The repository was still named after the original `??` trigger, which ADR-005 had already replaced with `@@` because `??` is a bash glob. | References updated; the binary was already `ama`. The GitHub repository and the local directory are renamed by the owner. |
+| A-06 | 2026-09-26 | **Adapters apply to the structured `command:` form, and insert a token rather than a flag.** Dropping the bare-string form from the documented config made the old bypass a trap: `command: [claude]` would have hung. `codex`'s one-shot mode is a subcommand, and `codex exec -p` means `--profile`. | `adapter: false` becomes the explicit escape hatch; `codex` and `agy` join the table; the `{prompt}` index is resolved after normalisation. Amends ADR-003 and REQ-18. |
+| A-07 | 2026-09-26 | **`ama setup` added (REQ-29); `install.sh` delegates to it.** rustc rejects a crate named `@@`, so cargo-dist cannot ship the alias as a second `[[bin]]` — it has to be created after the binary lands, and after a `curl` install there is no repository to run a script from. | One subcommand now owns the alias, the starter config, and the rc wiring, so the clone path and the curl path cannot drift. |
+| A-08 | 2026-09-26 | **Config directory `~/.qmx2/` → `~/.ama/`.** ADR-005 had kept the old name on the grounds that renaming would break the README; with A-05 done and nothing released, there is no installed base to break. | Amends ADR-005 and REQ-16. |
+| A-09 | 2026-09-26 | **cargo-dist packaging (REQ-30).** Installation required a clone, a toolchain, and a release build. | `dist-workspace.toml` plus a generated release workflow produce `ama-installer.sh` for macOS and Linux on tag. Windows is excluded: the headline feature is a bash/zsh Enter hook, so a Windows build could offer `ama ask` but never `@@`. |
 | A-02 | 2026-09-26 | **Rust `escape` module removed.** Nothing in Rust ever escapes: `@@` receives arguments the shell already parsed. Splitting and quoting must happen in the hook, since routing every Enter press through a subprocess would violate NFR-01. Both now live in the shell scripts, property-tested from Rust by driving the real shell. | Strictly better evidence — the oracle is now the shell that actually runs the code, not a Rust reimplementation of it. |
 
 ## Decisions carried into this cycle

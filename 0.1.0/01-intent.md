@@ -43,7 +43,7 @@ questions continue the conversation. Clearing the screen clears the conversation
 
 - **C-01** Written in Rust.
 - **C-02** Trigger is `@@` followed by a space, at the start of the line.
-- **C-03** The agent is user-supplied and configured in `~/.qmx2/config.yml`. No agent
+- **C-03** The agent is user-supplied and configured in `~/.ama/config.yml`. No agent
   is hardwired and no API key is ever handled by this tool.
 - **C-04** Conversation context is bounded by the current terminal view, resetting when
   the screen is cleared.

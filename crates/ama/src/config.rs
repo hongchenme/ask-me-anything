@@ -1,4 +1,4 @@
-//! Load and validate `~/.qmx2/config.yml` and resolve it to a runnable agent.
+//! Load and validate `~/.ama/config.yml` and resolve it to a runnable agent.
 
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -24,10 +24,21 @@ pub struct AgentSpec {
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum AgentConfig {
-    /// `agent: claude --model opus` — adapters apply.
+    /// `agent: claude --model opus` — a bare string. Still supported, but the
+    /// documented form is `command:` below.
     Line(String),
-    /// `agent: { command: [...] }` — adapters are bypassed.
-    Structured { command: Vec<String> },
+    /// `agent: { command: [...] }` — the documented form. Adapters apply here
+    /// too (A-06), so `[claude]` becomes `claude -p` rather than hanging in
+    /// interactive mode. Set `adapter: false` for a fully literal argv.
+    Structured {
+        command: Vec<String>,
+        #[serde(default = "default_adapter")]
+        adapter: bool,
+    },
+}
+
+fn default_adapter() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,8 +56,9 @@ fn default_max_context_lines() -> usize {
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error(
-        "no config at {0}\n\nCreate it with:\n\n  mkdir -p \"$(dirname {0})\"\n  \
-         printf 'agent: claude --model opus --effort high\\n' > {0}"
+        "no config at {0}\n\nRun `ama setup` to create one, or write it yourself:\n\n  \
+         mkdir -p \"$(dirname {0})\"\n  \
+         printf 'agent:\\n  command: [claude]\\n' > {0}"
     )]
     Missing(PathBuf),
     #[error("could not read {path}: {source}")]
@@ -63,7 +75,7 @@ pub enum ConfigError {
     EmptyAgent,
 }
 
-/// `$AMA_CONFIG` when set, else `~/.qmx2/config.yml`.
+/// `$AMA_CONFIG` when set, else `~/.ama/config.yml`.
 pub fn config_path() -> PathBuf {
     if let Ok(p) = std::env::var("AMA_CONFIG")
         && !p.is_empty()
@@ -71,7 +83,7 @@ pub fn config_path() -> PathBuf {
         return PathBuf::from(p);
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".qmx2").join("config.yml")
+    PathBuf::from(home).join(".ama").join("config.yml")
 }
 
 impl Config {
@@ -94,15 +106,15 @@ impl Config {
     fn validate(&self) -> Result<(), ConfigError> {
         match &self.agent {
             AgentConfig::Line(s) if s.trim().is_empty() => Err(ConfigError::EmptyAgent),
-            AgentConfig::Structured { command } if command.is_empty() => {
+            AgentConfig::Structured { command, .. } if command.is_empty() => {
                 Err(ConfigError::EmptyAgent)
             }
             _ => Ok(()),
         }
     }
 
-    /// Resolve the configuration into an invocation, applying adapters only
-    /// to the bare-string form.
+    /// Resolve the configuration into an invocation. Adapters apply to both
+    /// forms (A-06) unless the structured form sets `adapter: false`.
     pub fn agent_spec(&self) -> Result<AgentSpec, ConfigError> {
         match &self.agent {
             AgentConfig::Line(line) => {
@@ -115,13 +127,20 @@ impl Config {
                     prompt_via: PromptVia::Stdin,
                 })
             }
-            AgentConfig::Structured { command } => {
-                let via = command
+            AgentConfig::Structured { command, adapter } => {
+                let argv = if *adapter {
+                    adapter::normalize(command)
+                } else {
+                    command.clone()
+                };
+                // Locate the placeholder *after* normalisation: inserting a
+                // one-shot token shifts every later index.
+                let via = argv
                     .iter()
                     .position(|a| a.contains("{prompt}"))
                     .map_or(PromptVia::Stdin, PromptVia::Arg);
                 Ok(AgentSpec {
-                    argv: command.clone(),
+                    argv,
                     prompt_via: via,
                 })
             }

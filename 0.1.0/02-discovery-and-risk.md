@@ -166,9 +166,9 @@ the tool supplies the missing flag. Resolved by ADR-003.
 | Data | Class | Handling |
 |---|---|---|
 | Terminal pane content | Potentially secret-bearing (RISK-01) | Held in memory, sent to the user's configured agent, never written to disk by `ama` |
-| Conversation transcript (non-tmux fallback) | Same | `~/.qmx2/sessions/<key>.jsonl`, mode `0600`, deleted on reset |
+| Conversation transcript (non-tmux fallback) | Same | `~/.ama/sessions/<key>.jsonl`, mode `0600`, deleted on reset |
 | Agent credentials | Not handled | `ama` never reads, stores, or forwards API keys; the agent CLI owns its own auth |
-| `~/.qmx2/config.yml` | User configuration | Read only |
+| `~/.ama/config.yml` | User configuration | Read only |
 
 ## 6. Risk tier
 

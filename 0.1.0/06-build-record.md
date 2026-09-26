@@ -12,6 +12,12 @@ updated: 2026-09-26
 
 # Build record
 
+> **Historical record.** This build record is frozen as executed. It still says
+> `question-mark-x2` and `~/.qmx2/`, and describes the pre-A-06 adapter rule.
+> Current truth lives in [03-product-requirements.md](03-product-requirements.md)
+> and [04-design.md](04-design.md); the changes are listed under Amendments in
+> the [cycle index](README.md).
+
 ## 1. Summary
 
 All ten tasks of `0.1.0/05-implementation-plan.md` are built on `cycle/0.1.0-ama`.

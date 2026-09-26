@@ -27,7 +27,7 @@ maps requirement groups to the test layers defined in
 | **View** | The visible terminal screen; from the first *prior* trigger line on it to the bottom once a conversation is under way, otherwise the whole screen (A-04) |
 | **Turn** | One prompt and its answer |
 | **Session** | The sequence of turns sharing a view; ends when the screen is cleared |
-| **Agent** | The user's own CLI, named in `~/.qmx2/config.yml` |
+| **Agent** | The user's own CLI, named in `~/.ama/config.yml` |
 | **Adapter** | Built-in knowledge of how to make a known agent one-shot |
 
 ## Functional requirements
@@ -67,9 +67,9 @@ maps requirement groups to the test layers defined in
 
 | ID | Requirement | Acceptance criterion |
 |---|---|---|
-| REQ-16 | The agent is read from `~/.qmx2/config.yml`, honouring `$XDG_CONFIG_HOME`-style override via `AMA_CONFIG` for testability. | Unit: config load from a temp path. |
+| REQ-16 | The agent is read from `~/.ama/config.yml`, honouring `$XDG_CONFIG_HOME`-style override via `AMA_CONFIG` for testability. | Unit: config load from a temp path. |
 | REQ-17 | `agent:` accepts a bare command string. The prompt is written to the agent's stdin. | Unit: `agent: mycli --flag` → argv `[mycli, --flag]`, prompt on stdin. |
-| REQ-18 | An adapter table supplies a missing one-shot flag for known agents, so the README's `agent: claude --model opus --effort high` works as written. | Unit fixture table: `claude …` → `claude -p …`; `-p` already present → unchanged; unknown agent → unchanged. |
+| REQ-18 | An adapter table supplies a missing one-shot **token** for known agents (`claude` → `-p`, `codex` → `exec`, `ollama` → `run`, `agy` → `-p {prompt}` because its `-p` takes a value and it does not read stdin), applied to **both** config forms so the documented `command: [claude]` cannot hang. `adapter: false` opts out. (Amended by A-06.) | Unit fixture table per agent: missing token → inserted; already present → unchanged; unknown agent → unchanged; `adapter: false` → literal; a `{prompt}` index survives an inserted token. |
 | REQ-19 | An explicit structured form overrides all adapter behaviour, with `{prompt}` substituted as an argument when present. | Unit: `command: [my-bot, --ask, "{prompt}"]` → argv with the prompt substituted and nothing on stdin. |
 | REQ-20 | With no config file, `ama` reports what to write rather than guessing. | Integration: missing config → exit 2 with a message naming the path and a valid example. |
 | REQ-21 | `ama` never reads, stores, or forwards agent credentials. | Review: no code path touches an API-key-shaped environment variable or a credentials file. |
@@ -84,6 +84,8 @@ maps requirement groups to the test layers defined in
 | REQ-25 | `ama doctor` reports shell, integration state, context source, session key, resolved agent argv, and whether the agent is executable. | Integration: output contains each field; exit 0 when healthy, non-zero when the agent is missing. |
 | REQ-26 | `ama session reset` discards the current session's transcript. | Integration: transcript file removed; next turn has no prior context. |
 | REQ-27 | `@@` is usable directly, including in scripts, as an alias for `ama ask --`. | Integration: `@@ 'hello'` from a non-interactive script produces an answer. |
+| REQ-29 | `ama setup` creates the `@@` alias, a starter config, and the shell rc wiring, without a repository checkout. It is idempotent, never overwrites an existing config, repoints a stale alias, and `--dry-run` changes nothing. (Added by A-07.) | Integration against a throwaway `HOME`: alias is a symlink to the binary; PATH line precedes the eval line; a second run adds nothing; a pre-existing config survives; a stale alias is repointed; dry run writes nothing. |
+| REQ-30 | A user can install without cloning: a `curl`-piped installer places `ama` on PATH, and `ama setup` completes the install. (Added by A-09.) | `dist plan` lists `ama-installer.sh` for every supported target; CI builds it on tag. |
 
 ## Non-functional requirements
 

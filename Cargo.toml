@@ -3,6 +3,8 @@ resolver = "3"
 members = ["crates/ama"]
 
 [workspace.package]
+# Members set their own `version`; kept here for any future member
+# that wants to inherit it.
 version = "0.1.0"
 edition = "2024"
 publish = false
@@ -17,3 +19,8 @@ assert_cmd = "2.2.2"
 predicates = "3.1.4"
 proptest = "1"
 tempfile = "3"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

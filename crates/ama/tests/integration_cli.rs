@@ -7,7 +7,7 @@ fn fixture(name: &str) -> String {
 }
 
 /// A config pointing at a fake agent, plus an isolated HOME so the real
-/// ~/.qmx2 is never touched by tests.
+/// ~/.ama is never touched by tests.
 fn env() -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().expect("tempdir");
     let cfg = dir.path().join("config.yml");
@@ -117,7 +117,7 @@ fn the_transcript_is_readable_only_by_its_owner() {
             .args(["ask", "--", "q"])
             .assert()
             .success();
-        let sessions = d.path().join(".qmx2/sessions");
+        let sessions = d.path().join(".ama/sessions");
         let entry = std::fs::read_dir(&sessions)
             .expect("sessions dir")
             .next()
@@ -147,7 +147,7 @@ fn the_sessions_directory_is_readable_only_by_its_owner() {
             .args(["ask", "--", "q"])
             .assert()
             .success();
-        let sessions = d.path().join(".qmx2/sessions");
+        let sessions = d.path().join(".ama/sessions");
         let mode = std::fs::metadata(&sessions)
             .expect("sessions dir")
             .permissions()
@@ -593,5 +593,140 @@ fn doctor_names_the_context_source_it_would_use() {
     assert!(
         context_line.contains("transcript"),
         "outside tmux the context line must name the transcript source, got: {context_line}"
+    );
+}
+
+// --- `ama setup` (A-07) -----------------------------------------------------
+//
+// setup is what makes a curl install usable: cargo-dist ships only `ama`,
+// because rustc rejects a crate named `@@`, so the alias has to be created
+// after the fact. It runs against a throwaway HOME and a copy of the binary,
+// never the developer's real environment.
+
+/// Copy the built binary into an isolated prefix and return (home, bin_dir).
+fn setup_env() -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bin_dir = dir.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("bin dir");
+    std::fs::copy(assert_cmd::cargo::cargo_bin("ama"), bin_dir.join("ama")).expect("copy ama");
+    (dir, bin_dir)
+}
+
+fn setup_cmd(home: &std::path::Path, bin_dir: &std::path::Path) -> Command {
+    let mut c = Command::new(bin_dir.join("ama"));
+    c.env("HOME", home)
+        .env("SHELL", "/bin/bash")
+        // Deliberately excludes bin_dir, so the PATH branch is exercised.
+        .env("PATH", "/usr/bin:/bin")
+        .env_remove("AMA_CONFIG");
+    c
+}
+
+#[test]
+fn setup_creates_the_trigger_alias_config_and_rc() {
+    let (d, bin) = setup_env();
+    setup_cmd(d.path(), &bin).arg("setup").assert().success();
+
+    let trigger = bin.join("@@");
+    assert!(trigger.exists(), "@@ alias must exist");
+    assert_eq!(
+        trigger.read_link().expect("symlink"),
+        bin.join("ama"),
+        "@@ must point at the ama binary"
+    );
+
+    let cfg = std::fs::read_to_string(d.path().join(".ama/config.yml")).expect("config");
+    assert!(
+        cfg.contains("command: [claude]"),
+        "starter config is the structured form: {cfg}"
+    );
+
+    let rc = std::fs::read_to_string(d.path().join(".bashrc")).expect("rc");
+    assert!(
+        rc.contains("ama init bash"),
+        "rc wires the integration: {rc}"
+    );
+    assert!(
+        rc.contains("export PATH="),
+        "rc puts the prefix on PATH: {rc}"
+    );
+    let path_at = rc.find("export PATH=").expect("path line");
+    let eval_at = rc.find("eval \"$(ama init").expect("eval line");
+    assert!(
+        path_at < eval_at,
+        "PATH must come before the eval that needs it"
+    );
+}
+
+#[test]
+fn setup_is_idempotent() {
+    let (d, bin) = setup_env();
+    setup_cmd(d.path(), &bin).arg("setup").assert().success();
+    setup_cmd(d.path(), &bin).arg("setup").assert().success();
+
+    let rc = std::fs::read_to_string(d.path().join(".bashrc")).expect("rc");
+    assert_eq!(
+        rc.matches("ama init bash").count(),
+        1,
+        "one eval line: {rc}"
+    );
+    assert_eq!(rc.matches("export PATH=").count(), 1, "one PATH line: {rc}");
+}
+
+#[test]
+fn setup_never_overwrites_an_existing_config() {
+    let (d, bin) = setup_env();
+    std::fs::create_dir_all(d.path().join(".ama")).expect("dir");
+    std::fs::write(
+        d.path().join(".ama/config.yml"),
+        "agent:\n  command: [mine]\n",
+    )
+    .expect("w");
+
+    setup_cmd(d.path(), &bin).arg("setup").assert().success();
+
+    let cfg = std::fs::read_to_string(d.path().join(".ama/config.yml")).expect("config");
+    assert!(
+        cfg.contains("[mine]"),
+        "the user's agent must survive: {cfg}"
+    );
+}
+
+#[test]
+fn setup_dry_run_changes_nothing() {
+    let (d, bin) = setup_env();
+    setup_cmd(d.path(), &bin)
+        .args(["setup", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("would"));
+
+    assert!(
+        !bin.join("@@").exists(),
+        "dry run must not create the alias"
+    );
+    assert!(
+        !d.path().join(".ama/config.yml").exists(),
+        "dry run must not write a config"
+    );
+    assert!(
+        !d.path().join(".bashrc").exists(),
+        "dry run must not touch the rc"
+    );
+}
+
+#[test]
+fn setup_refreshes_a_stale_alias_after_an_upgrade() {
+    let (d, bin) = setup_env();
+    // A symlink left by an older install, pointing somewhere else entirely.
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("/bin/true", bin.join("@@")).expect("stale link");
+
+    setup_cmd(d.path(), &bin).arg("setup").assert().success();
+
+    assert_eq!(
+        bin.join("@@").read_link().expect("symlink"),
+        bin.join("ama"),
+        "a stale alias is worse than none; setup must repoint it"
     );
 }

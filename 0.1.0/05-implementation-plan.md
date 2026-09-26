@@ -12,6 +12,12 @@ updated: 2026-09-26
 
 # `ama` 0.1.0 Implementation Plan
 
+> **Historical record.** This implementation plan is frozen as executed. It still says
+> `question-mark-x2` and `~/.qmx2/`, and describes the pre-A-06 adapter rule.
+> Current truth lives in [03-product-requirements.md](03-product-requirements.md)
+> and [04-design.md](04-design.md); the changes are listed under Amendments in
+> the [cycle index](README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship `ama`, a Rust CLI that turns `@@ <question>` typed at a bash or zsh prompt into an inline answer from the user's own agent, with the visible terminal as context.

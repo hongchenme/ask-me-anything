@@ -68,14 +68,44 @@ On top of that sits a small adapter table, because the README's documented confi
 returns (F-05). An adapter may *only* insert a missing one-shot flag; it never removes,
 reorders, or rewrites user arguments.
 
-| Agent | Condition | Action |
-|---|---|---|
-| `claude` | no `-p` / `--print` | insert `-p` after the program |
-| `ollama` | no subcommand | insert `run` |
-| anything else | — | unchanged |
+| Agent | Condition | Action | Prompt via |
+|---|---|---|---|
+| `claude` | no `-p` / `--print` | insert `-p` after the program | stdin |
+| `codex` | no `exec` token | insert `exec` after the program | stdin |
+| `ollama` | first argument is not `run` | insert `run` | stdin |
+| `agy` | no `-p`/`--print`/`--prompt`/`{prompt}` | append `-p {prompt}` | argument |
+| anything else | — | unchanged | stdin |
 
-The structured form (`command: [...]`, optional `{prompt}` placeholder) bypasses
-adapters entirely and is the documented escape hatch.
+**Amendment A-06, 2026-09-26.** Two changes, both forced by the same decision.
+
+*Adapters now apply to the structured form too.* The bare-string form is no longer
+the documented one — `~/.ama/config.yml` ships `agent:\n  command: [claude]` — and
+under the original rule that form bypassed adapters, so the documented config would
+have launched an interactive session and hung on first use. The escape hatch survives
+as an explicit `adapter: false`, which is better than the old implicit one: a reader
+of the config can now see that nothing will be inserted, instead of having to know
+that choosing a list form silently disabled a feature.
+
+*Adapters insert a **token**, not a flag.* `codex`'s one-shot mode is a subcommand
+(`codex exec`), and `codex exec -p` means `--profile`, not `--print` — inserting a
+flag there would silently change the invocation. Verified against codex 0.155:
+`codex exec` reads the prompt from stdin and writes only the answer to stdout, with
+its banner and token counts on stderr, so it fits the generic contract unchanged.
+
+The insert-only rule is untouched: an adapter still never removes, reorders, or
+rewrites a user's arguments.
+
+*`agy` does not fit the stdin contract.* Its `-p` takes the prompt as its value —
+`agy -p` alone fails with `flag needs an argument: -p` — so its adapter also appends
+a `{prompt}` placeholder, which `agent_spec` resolves to `PromptVia::Arg`. This was
+found by running the tool; its `--help` does not distinguish a boolean flag from one
+taking a value. It is appended rather than inserted after the program so that the
+flag and its value cannot be separated by the user's own arguments.
+
+*System prompts* are passed through `command`, not modelled by `ama`. Tested:
+`claude --system-prompt` replaces the default and `--append-system-prompt` adds to it,
+both in `-p` mode; `codex` has no such flag but accepts
+`-c 'instructions="…"'`; `agy` has no equivalent.
 
 ### ADR-004 — One binary, two names, dispatched on `argv[0]`
 
@@ -92,9 +122,13 @@ directly in scripts where the caller does its own quoting.
 
 The product is "ask me anything", so the binary is `ama`. The trigger stays `@@`: the
 repository's namesake `??` is a bash glob and would be expanded or mangled before
-reaching any handler, whereas `@` carries no special meaning to bash or zsh. The
-existing `~/.qmx2/` configuration directory is retained; renaming it would break the
-README for no benefit.
+reaching any handler, whereas `@` carries no special meaning to bash or zsh. The configuration directory is `~/.ama/`.
+
+**Amendment A-08, 2026-09-26.** It was originally `~/.qmx2/`, kept from the
+repository's old name on the grounds that renaming it would break the README for no
+benefit. The repository is now `ask-me-anything` (A-05) and nothing has been released,
+so there is no installed base to break — and a directory named after a name the
+project no longer uses is a small permanent tax on every reader.
 
 ### ADR-006 — The trigger is recognised at any command position, and only the tail is rewritten
 
@@ -162,7 +196,7 @@ tmux path — `clear` runs first, so the pane is already empty when `@@` scrapes
    │           │            │                     │                                │
    │           │            └── session ◀─────────┴── append turn                   │
    │           │                                                                    │
-   │      ~/.qmx2/config.yml        tmux capture-pane  |  ~/.qmx2/sessions/<key>    │
+   │      ~/.ama/config.yml        tmux capture-pane  |  ~/.ama/sessions/<key>    │
    └───────────────────────────────────────────────────────────────────────────────┘
                                        │
                                        ▼
@@ -177,7 +211,7 @@ Each module has one purpose, a narrow interface, and is testable without the oth
 | Module | Purpose | Depends on | Key interface |
 |---|---|---|---|
 | `cli` | Parse argv, dispatch on `argv[0]` and subcommand, map errors to exit codes | all | `fn run(argv) -> ExitCode` |
-| `config` | Load and validate `~/.qmx2/config.yml`; resolve `agent:` to an `AgentSpec` | — | `fn load(path) -> Result<Config>`, `fn resolve(&Config) -> AgentSpec` |
+| `config` | Load and validate `~/.ama/config.yml`; resolve `agent:` to an `AgentSpec` | — | `fn load(path) -> Result<Config>`, `fn resolve(&Config) -> AgentSpec` |
 | `adapter` | The one-shot-flag table from ADR-003 | — | `fn normalize(argv) -> Vec<String>` (pure) |
 | `session` | Derive the session key; read, append, and delete the transcript | — | `fn key() -> SessionKey`, `fn load/append/reset` |
 | `context` | Produce context lines from pane or transcript; apply `max_context_lines` | `session` | `fn gather(&Source, cap) -> Vec<String>` |
@@ -210,7 +244,7 @@ shell (see §4). No change to requirements, risk tier, or any other module.
      *prior* conversation rather than by first trigger (A-04): two or more trigger
      lines → from the first of them to the bottom; exactly one → the whole visible
      pane, since that one is this turn's own already-echoed question; none → nothing.
-   - otherwise → read `~/.qmx2/sessions/<key>.jsonl`.
+   - otherwise → read `~/.ama/sessions/<key>.jsonl`.
    - Truncate to the last `max_context_lines` (NFR-02).
 4. **Compose.** Context under a `## Terminal` heading, then the question. A short system
    preamble states that the answer goes to a terminal and should be brief.
@@ -250,7 +284,7 @@ surface that single-quoting avoids.
 
 | Condition | Behaviour | Exit |
 |---|---|---|
-| No config file | Message naming `~/.qmx2/config.yml` and a valid two-line example | 2 |
+| No config file | Message naming the path and pointing at `ama setup` | 2 |
 | Malformed YAML or wrong field type | Diagnostic naming the field (NFR-04) | 2 |
 | Empty `agent:` | Diagnostic naming the field | 2 |
 | Agent binary not found | Message naming the resolved program and suggesting `ama doctor` | 2 |
@@ -266,7 +300,7 @@ No fallible runtime path uses `unwrap`/`expect`; `#![forbid(unsafe_code)]` is cr
 ## 6. Configuration schema
 
 ```yaml
-# ~/.qmx2/config.yml
+# ~/.ama/config.yml
 
 # Form 1 — bare string. Adapters supply a missing one-shot flag.
 agent: claude --model opus --effort high

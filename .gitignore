@@ -25,7 +25,6 @@ target
 
 # superpowers SDD scratch workspace
 .superpowers/
-AGENT_NATIVE_SDLC.md
 
 # ama session state, if ever created inside the repo
-.qmx2/
+.ama/
