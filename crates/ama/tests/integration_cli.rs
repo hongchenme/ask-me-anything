@@ -383,6 +383,20 @@ fn doctor_reports_every_field_and_succeeds_when_healthy() {
             "doctor must report `{field}`:\n{text}"
         );
     }
+    // R22: the loop above only proves the word "integration" appears
+    // somewhere in stdout -- the field *label* `println!("integration  {}",
+    // ...)` supplies that on its own, so a stubbed `integration_status()`
+    // that always returned "not loaded" would still pass every assertion
+    // above. This helper's `ama()` sets `$AMA_SESSION`, which is doctor's
+    // only signal that the hook is live, so pin the branch it must take.
+    let integration_line = text
+        .lines()
+        .find(|l| l.starts_with("integration"))
+        .expect("doctor must report an `integration` line");
+    assert!(
+        integration_line.contains("loaded ("),
+        "with $AMA_SESSION set, integration must be reported as loaded, got: {integration_line}"
+    );
     assert!(out.status.success());
 }
 
