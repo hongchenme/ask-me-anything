@@ -149,13 +149,21 @@ fn survives_an_embedded_newline_from_bracketed_paste() {
 /// non-tty input; the only cost is two harmless "no job control" warnings
 /// on stderr, discarded here like the round-trip helpers above discard
 /// unrelated stderr.
+///
+/// R18 finding 5: an earlier version of this helper built the log path from
+/// `pid + line.len()`, and two call sites (`"clear && @@ fresh start"`,
+/// `"reset && @@ fresh start"`) are both 23 characters -- so, in the same
+/// process, they collided on one shared file in the system temp directory.
+/// Only the whole-suite run is mandated single-threaded; `cargo test --test
+/// shell_functions` on its own runs in parallel by default, where one
+/// test's `remove_file` at entry could delete the other's still-unread
+/// record between its `bash` run and its `read_to_string`. `tempfile::
+/// tempdir()` gives every call its own uniquely-named directory (already a
+/// dev-dependency, already used the same way in `e2e_shell.rs`), and its
+/// `Drop` cleans it up automatically -- no manual `remove_file` needed.
 fn calls_session_reset_for(line: &str) -> bool {
-    let log = std::env::temp_dir().join(format!(
-        "ama-test-session-reset-{}-{:x}",
-        std::process::id(),
-        line.len()
-    ));
-    let _ = std::fs::remove_file(&log);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let log = dir.path().join("session-reset.log");
     let script = format!(
         r#"ama() {{ printf '%s\n' "$*" >> '{log}'; }}
            source '{BASH_SRC}'
@@ -173,9 +181,7 @@ fn calls_session_reset_for(line: &str) -> bool {
         "bash failed: {out:?}\nstderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let called = std::fs::read_to_string(&log).is_ok_and(|s| s.contains("session reset"));
-    let _ = std::fs::remove_file(&log);
-    called
+    std::fs::read_to_string(&log).is_ok_and(|s| s.contains("session reset"))
 }
 
 #[test]

@@ -282,25 +282,22 @@ fn init_rejects_an_unknown_shell() {
 }
 
 // The brief's original version of this test appended a bare `exit 0` and
-// asserted only `.success()`. That is non-discriminating: under a plain
-// `bash -c` invocation (no enclosing function or sourced-file context),
-// REQ-24's guard's own `return 0` always fails ("can only `return' from a
-// function or sourced script"), falls through to `exit 0`, and that `exit`
-// terminates the whole `-c` process immediately -- so the appended `exit 0`
-// never even runs, and `.success()` passes for that reason alone. Worse,
-// even the mutation that drops the guard's `|| exit 0` fallback (leaving a
-// bare `return 0 2>/dev/null`, which also fails and this time has nothing to
-// fall back to) lets `export AMA_SESSION=...` and `__ama_install`'s `bind`
-// calls run for real, yet *still* exits 0 with empty stderr under `bash -c`
-// -- `bind` silently succeeds even with no readline/tty active -- so the
-// original assertion could not fail either way.
-//
-// Assert on the guard's actual, specific, observable effect instead: append
-// a diagnostic `printf` after the whole script and require it to produce
-// *no* output. If the guard's `exit` really fires, that `printf` line is
-// never reached at all (proved directly below by running the same
-// construct with the guard removed, where the appended line's output very
-// much does appear).
+// asserted only `.success()` -- non-discriminating, and its replacement
+// (below, from the prior fix round) has since been overtaken by R18
+// finding 1: REQ-24's guard used to `return 0 2>/dev/null || exit 0`,
+// which -- under a plain `bash -c` with no enclosing function or
+// sourced-file context -- always fell through to `exit`, killing the
+// whole process before an appended diagnostic line could ever run. That
+// made "the diagnostic line is unreachable" the thing to assert. R18
+// finding 1 found that same `exit` fires under the *documented* install
+// path too (`eval "$(ama init bash)"` inside an interactive shell is fine,
+// but a non-interactive one sourcing a `.bashrc` containing that line is
+// not), and replaced the guard with a plain `if` that only skips its own
+// body. So the property flips: a line appended *after* the script must
+// now run (nothing aborts the caller), while `AMA_SESSION` -- exported
+// only inside the `if`'s body -- must still stay unset (the
+// interactive-only body really was skipped, not just that the process
+// happened to keep going regardless).
 #[test]
 fn sourcing_the_script_in_a_non_interactive_shell_is_a_silent_success() {
     let out = Command::cargo_bin("ama")
@@ -312,7 +309,51 @@ fn sourcing_the_script_in_a_non_interactive_shell_is_a_silent_success() {
     let mut c = Command::new("bash");
     c.env_remove("AMA_SESSION");
     c.arg("-c").arg(format!(
-        "{script}\nprintf 'UNREACHABLE AMA_SESSION=[%s]' \"$AMA_SESSION\""
+        "{script}\nprintf 'AMA_SESSION=[%s]' \"$AMA_SESSION\""
     ));
-    c.assert().success().stdout("").stderr("");
+    c.assert().success().stdout("AMA_SESSION=[]").stderr("");
+}
+
+// R18 finding 1's exact failure mode, reproduced directly: line 1 of
+// `ama.bash` documents `eval "$(ama init bash)"` as the install line, and
+// the realistic place for that line is a `.bashrc`. `eval` does not open a
+// new sourcing frame -- it runs in the *current* one -- so if a
+// non-interactive shell ever sources a `.bashrc` containing that line (an
+// ssh remote command, `$BASH_ENV`, some distros' non-interactive startup),
+// a `return` reached inside the eval'd guard returns from the `.bashrc`
+// sourcing operation itself, silently skipping every line after it for the
+// rest of that file. Verified directly against the pre-fix script: this
+// exact construct printed only "AFTER_SOURCE_CALL", never
+// "AFTER_EVAL_IN_RCFILE".
+#[test]
+fn eval_ing_the_script_in_a_sourced_rcfile_does_not_skip_the_rest_of_that_file() {
+    let out = Command::cargo_bin("ama")
+        .expect("bin")
+        .args(["init", "bash"])
+        .output()
+        .expect("run");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script_path = dir.path().join("ama_init_bash.sh");
+    std::fs::write(&script_path, &out.stdout).expect("write script");
+    let rcfile = dir.path().join("fake_bashrc");
+    std::fs::write(
+        &rcfile,
+        format!(
+            "eval \"$(cat {})\"\necho AFTER_EVAL_IN_RCFILE\n",
+            script_path.display()
+        ),
+    )
+    .expect("write rcfile");
+    Command::new("bash")
+        .arg("-c")
+        .arg(format!(
+            "source {}; echo AFTER_SOURCE_CALL",
+            rcfile.display()
+        ))
+        .assert()
+        .success()
+        .stdout(
+            predicates::str::contains("AFTER_EVAL_IN_RCFILE")
+                .and(predicates::str::contains("AFTER_SOURCE_CALL")),
+        );
 }

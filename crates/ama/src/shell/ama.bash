@@ -37,8 +37,18 @@ __ama_split() {
 }
 
 # ---- interactive integration ------------------------------------------------
-# Nothing to do in a non-interactive shell (REQ-24).
-case $- in *i*) ;; *) return 0 2>/dev/null || exit 0 ;; esac
+# Nothing to do in a non-interactive shell (REQ-24). A guard that returns or
+# exits here is wrong (R18, finding 1): line 1 of this file documents
+# `eval "$(ama init bash)"` as the install path, and under `eval` a bare
+# `return` is not inside a function or a sourced script, so it fails and
+# `|| exit` fires instead -- killing the calling shell outright. Verified:
+# `bash -c 'eval "$(cat ama.bash)"; echo REACHED'` prints nothing. Sourced
+# from a non-interactive `.bashrc` (an ssh remote command, `$BASH_ENV`) it
+# is worse: `return` succeeds, but returns from the *rc file* itself,
+# silently skipping every later line for the rest of that file. An `if`
+# just skips its own body in every calling context, disturbing nothing
+# before or after it.
+if [[ $- == *i* ]]; then
 
 # A stable per-shell identity for the transcript fallback.
 export AMA_SESSION="$$"
@@ -72,11 +82,22 @@ __ama_hook() {
     return 0
 }
 
+# Ctrl-L (R18, finding 2): readline's own clear-screen preserves and
+# redraws whatever the user was typing, so this must too -- setting
+# READLINE_LINE/READLINE_POINT to empty here throws the in-progress line
+# away. `3J` also clears scrollback, matching what a user means by Ctrl-L.
+# Unlike other `bind -x` keys, \C-l specifically does not get an automatic
+# post-callback redraw unless READLINE_LINE/READLINE_POINT are actually
+# assigned during the callback -- verified directly: a widget that only
+# `printf`s the clear sequence and never touches them leaves the screen
+# blank with nothing redrawn at all, on every other key an untouched
+# buffer still gets redrawn. Re-assigning them to their own current value
+# preserves the line and is enough to make bash redraw it.
 __ama_clear_screen_widget() {
     ama session reset >/dev/null 2>&1
-    READLINE_LINE=""
-    READLINE_POINT=0
-    printf '\033[H\033[2J'
+    printf '\033[H\033[2J\033[3J'
+    READLINE_LINE=$READLINE_LINE
+    READLINE_POINT=$READLINE_POINT
 }
 
 # Chain to whatever already owns Enter (RISK-03) instead of clobbering it.
@@ -84,13 +105,20 @@ __ama_install() {
     local existing
     existing=$(bind -s 2>/dev/null | sed -n 's/^"\\C-m": "\(.*\)"$/\1/p' | head -n1)
     bind -x '"\C-x\C-aq": __ama_hook' 2>/dev/null || return 0
-    if [[ -n $existing && $existing != *'\C-x\C-aq'* ]]; then
-        bind "\"\\C-m\": \"\\C-x\\C-aq${existing}\"" 2>/dev/null
-    else
+    if [[ -z $existing ]]; then
         # \C-j is also accept-line and is left unbound, so the macro terminates.
         bind '"\C-m": "\C-x\C-aq\C-j"' 2>/dev/null
+    elif [[ $existing != *'\C-x\C-aq'* ]]; then
+        bind "\"\\C-m\": \"\\C-x\\C-aq${existing}\"" 2>/dev/null
     fi
+    # else (R18, finding 3): \C-m is already chained -- e.g. a second
+    # `eval "$(ama init bash)"` in the same shell -- so leave it alone.
+    # Falling into the old unconditional `else` here overwrote an
+    # already-correct chain with a bare `\C-x\C-aq\C-j`, dropping whatever
+    # third-party payload `\C-m` had been chained to.
     bind -x '"\C-l": __ama_clear_screen_widget' 2>/dev/null
 }
 
 __ama_install
+
+fi

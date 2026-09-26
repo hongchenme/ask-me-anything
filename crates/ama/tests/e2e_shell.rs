@@ -439,13 +439,24 @@ fn a_trigger_without_a_following_space_is_not_a_trigger() {
     assert!(!pane.contains("🤖:"), "{pane}");
 }
 
+// R18 finding 4: "indented question" has no shell metacharacter, so
+// "   @@ indented question" is also a perfectly valid command line on its
+// own -- bash itself discards leading whitespace before a command name,
+// and `@@` is a real executable on `$PATH` in this harness (`Pane::start`
+// copies it there), so it runs and answers whether or not `__ama_split`'s
+// leading-whitespace handling does anything at all. Verified by mutation:
+// forcing `__ama_split` to never strip a leading-whitespace prefix left
+// this test green. Using a question bash cannot parse unquoted (mirroring
+// `the_readme_first_example_works_verbatim`) closes that: if the trigger
+// is not recognised, bash chokes on the bare apostrophe and no answer
+// -- indented or otherwise -- ever appears.
 #[test]
 fn leading_whitespace_still_triggers() {
     require_tmux!();
     let p = Pane::start("ama-e2e-indent", "bash");
-    p.send("   @@ indented question");
+    p.send("   @@ what's up?");
     let pane = p.wait_for("🤖:", Duration::from_secs(10));
-    assert!(pane.contains("indented question"), "{pane}");
+    assert!(pane.contains("what's up?"), "{pane}");
 }
 
 /// RISK-03 / "things that will bite you": `bind -s` output parsing for the
@@ -458,15 +469,57 @@ fn leading_whitespace_still_triggers() {
 /// call runs, then proves it survived by pressing Enter on an empty line:
 /// if the old binding had been clobbered instead of chained, nothing would
 /// ever run it and the marker would never appear.
+///
+/// R18 finding 3 extends this to install *twice*: the guard
+/// `$existing != *'\C-x\C-aq'*` correctly stops a second install from
+/// re-chaining (which would nest `\C-x\C-aq` inside itself), but the
+/// original code then fell into the same `else` branch a fresh install
+/// uses, unconditionally overwriting `\C-m` with a bare `\C-x\C-aq\C-j` --
+/// dropping the third-party payload it had *already* correctly chained.
+/// Verified directly across three real installs in a tmux pane: `\C-m`
+/// went `[]` -> `\C-x\C-aqecho PRE-EXISTING\C-j` (correct) ->
+/// `\C-x\C-aq\C-j` (payload lost) on the second install. `__ama_install`
+/// is called a second time here via `\C-j`, not `Enter` -- `\C-m` is
+/// already chained by that point, so pressing it would replay that chain
+/// on top of the command instead of running it cleanly.
 #[test]
 fn an_existing_c_m_binding_is_chained_not_clobbered() {
     require_tmux!();
     let probe = "bind '\"\\C-m\": \"echo CHAIN-PROBE-RAN\\C-j\"'\n";
     let p = Pane::start_with_extra_rc("ama-e2e-chain", "bash", probe);
+    p.send_raw("__ama_install");
+    std::thread::sleep(Duration::from_millis(200));
+    p.send_raw("C-j");
+    std::thread::sleep(Duration::from_millis(200));
     p.send_raw("Enter");
     let pane = p.wait_for("CHAIN-PROBE-RAN", Duration::from_secs(5));
     assert!(
         pane.contains("CHAIN-PROBE-RAN"),
-        "a pre-existing \\C-m binding must be chained, not clobbered\n{pane}"
+        "a pre-existing \\C-m binding must be chained, not clobbered, \
+         even after a second install\n{pane}"
+    );
+}
+
+/// R18 finding 2: readline's own `clear-screen` (\C-l's default binding)
+/// clears the screen *and* redraws whatever was on the line; replacing it
+/// with a `bind -x` widget that clears but never touches
+/// `READLINE_LINE`/`READLINE_POINT` must still preserve that -- verified
+/// directly that it previously did not: pressing Ctrl-L left the pane
+/// completely blank, not even redrawing an empty prompt, because (unlike
+/// every other `bind -x` key tested) \C-l specifically gets no automatic
+/// post-callback redraw unless those variables are actually assigned
+/// during the callback. This widget had no test anywhere before this.
+#[test]
+fn ctrl_l_clears_the_screen_without_losing_the_typed_line() {
+    require_tmux!();
+    let p = Pane::start("ama-e2e-ctrl-l", "bash");
+    p.send_raw("echo HALF-TYPED-COMMAND");
+    std::thread::sleep(Duration::from_millis(400));
+    p.send_raw("C-l");
+    std::thread::sleep(Duration::from_millis(400));
+    let pane = p.capture();
+    assert!(
+        pane.contains("echo HALF-TYPED-COMMAND"),
+        "Ctrl-L must preserve the in-progress line, not just clear the screen\n{pane}"
     );
 }
