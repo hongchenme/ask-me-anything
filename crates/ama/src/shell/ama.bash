@@ -104,17 +104,18 @@ __ama_hook() {
 # throw the in-progress line away. `3J` also clears scrollback, matching
 # what a user means by Ctrl-L.
 #
-# The two self-assignments are retained as belt and braces after an
-# unreproduced report (R18, finding 2) that \C-l gets no post-callback
-# redraw unless those variables are assigned during the callback; two
-# later reviewers could not reproduce it on bash 5.3.9 (R29). They are
-# provably safe to keep regardless: a bare `name=word` assignment expands
-# parameters but performs neither word splitting nor globbing.
+# This deliberately does NOT touch READLINE_LINE/READLINE_POINT. It once
+# self-assigned them, hedging an unreproduced report (R18 finding 2) that
+# \C-l gets no post-callback redraw otherwise. Two reviewers failed to
+# reproduce that on bash 5.3.9, and shellcheck independently calls the
+# self-assignment a no-op (SC2269). The hedge is gone because the
+# behaviour it guarded is now pinned by a test --
+# `ctrl_l_clears_the_screen_and_scrollback_without_losing_the_typed_line`
+# in e2e_shell.rs -- which did not exist when the decision to keep it was
+# made. A test beats a suppressed lint on code nobody can show is needed.
 __ama_clear_screen_widget() {
     ama session reset >/dev/null 2>&1
     printf '\033[H\033[2J\033[3J'
-    READLINE_LINE=$READLINE_LINE
-    READLINE_POINT=$READLINE_POINT
 }
 
 # Chain to whatever already owns Enter (RISK-03) instead of clobbering it.
