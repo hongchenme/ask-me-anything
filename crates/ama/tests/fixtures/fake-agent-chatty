@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Talks on stderr while it thinks, the way codex does (0.1.2 F-14): one whole
+# line, then a line written in two pieces, and only then the answer.
+cat >/dev/null
+echo "progress one" >&2
+sleep 1
+printf 'partial' >&2
+sleep 1
+echo ' line' >&2
+sleep 1
+echo "the answer"

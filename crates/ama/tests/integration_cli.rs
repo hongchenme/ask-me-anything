@@ -864,3 +864,26 @@ fn setup_is_honest_with_an_unsupported_shell() {
         "no rc was invented for fish"
     );
 }
+
+/// REQ-37: stdout on a pipe is data, not a screen. It must carry exactly what
+/// 0.1.1 wrote: no moon, and no escape sequence erasing one.
+#[test]
+fn a_piped_answer_carries_no_trace_of_the_moon() {
+    let (d, cfg) = env();
+    let out = ama(&cfg, d.path())
+        .args(["ask", "--", "q"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(out).expect("utf8");
+    assert!(text.starts_with("🤖: "), "{text:?}");
+    assert!(
+        !text.contains('\x1b'),
+        "an escape sequence on a pipe: {text:?}"
+    );
+    for moon in ['🌑', '🌒', '🌓', '🌔', '🌕', '🌖', '🌗', '🌘'] {
+        assert!(!text.contains(moon), "{moon} on a pipe: {text:?}");
+    }
+}

@@ -466,3 +466,22 @@ fn the_bare_string_form_gets_the_default_grant_too() {
     let spec = Config::load(&p).expect("load").agent_spec().expect("spec");
     assert_eq!(spec.argv, v("claude -p --allowedTools WebSearch"));
 }
+
+/// REQ-39: the moon is on unless a config says otherwise, so every 0.1.1
+/// config gets it without an edit.
+#[test]
+fn the_spinner_is_on_unless_the_config_turns_it_off() {
+    let (_d, p) = write_cfg("agent: llm\n");
+    assert!(Config::load(&p).expect("load").spinner, "absent means on");
+    let (_d, p) = write_cfg("agent: llm\nspinner: false\n");
+    assert!(!Config::load(&p).expect("load").spinner);
+}
+
+/// REQ-39: like `tools:` (REQ-32), a value ama cannot read is an error that
+/// names the key -- never quietly taken as one of the two.
+#[test]
+fn a_spinner_value_that_is_not_a_boolean_is_rejected() {
+    let (_d, p) = write_cfg("agent: llm\nspinner: sometimes\n");
+    let err = Config::load(&p).expect_err("not a boolean").to_string();
+    assert!(err.contains("spinner") && err.contains("boolean"), "{err}");
+}

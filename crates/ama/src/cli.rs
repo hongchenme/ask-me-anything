@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 use std::io::Write;
 use std::process::ExitCode;
 
+use crate::spinner::Spinner;
 use crate::{agent, config, context, prompt, session, shellinit};
 
 const EXIT_OK: u8 = 0;
@@ -156,6 +157,16 @@ fn ask(question: &str, no_context: bool) -> ExitCode {
     };
     let composed = prompt::compose(&ctx, question);
 
+    // REQ-35: the moon, from now until the answer starts. Not a moment
+    // sooner: the pane has only just been captured, and a frame drawn before
+    // that would have been sent to the agent as part of its own context
+    // (F-15).
+    let spinner = if cfg.spinner {
+        Spinner::for_terminal()
+    } else {
+        None
+    };
+
     // Tee the answer so it can be recorded for the transcript fallback.
     let mut captured: Vec<u8> = Vec::new();
     let mut sink = Tee {
@@ -163,7 +174,12 @@ fn ask(question: &str, no_context: bool) -> ExitCode {
         b: &mut captured,
     };
 
-    match agent::run(&spec, &composed, &mut sink) {
+    let result = agent::run(&spec, &composed, &mut sink, spinner.as_ref());
+    // `run` has erased the moon on whichever path it took, spawn failures
+    // included. Nothing below draws; let it go before anything prints.
+    drop(spinner);
+
+    match result {
         Ok(0) => {
             let answer = String::from_utf8_lossy(&captured).into_owned();
             let _ = session::append_turn(

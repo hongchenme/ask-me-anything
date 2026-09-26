@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Reads the prompt, thinks in silence for 2 s, then echoes the prompt back.
+# The silence is what the moon fills. The echo is what proves the moon never
+# reached the prompt: a frame captured as context would come straight back
+# in the answer.
+prompt=$(cat)
+sleep 2
+printf '%s\n' "$prompt"

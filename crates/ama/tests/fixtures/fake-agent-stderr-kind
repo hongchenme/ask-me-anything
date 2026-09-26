@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Answers with what its own stderr is. While the moon is showing on a
+# terminal, ama routes an agent's stderr through a pipe (0.1.2 ADR-012); in
+# every other case the agent must get ama's stderr itself, exactly as 0.1.1
+# gave it -- `spinner: false` exists partly to guarantee that (RISK-13).
+cat >/dev/null
+if [ -t 2 ]; then
+    echo "stderr is a terminal"
+elif [ -p /dev/fd/2 ]; then
+    echo "stderr is a pipe"
+else
+    echo "stderr is something else"
+fi

@@ -3,7 +3,7 @@
 //! that eliminated design approach (A) -- see 02-discovery-and-risk.md F-03.
 
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 fn have(bin: &str) -> bool {
     Command::new("sh")
@@ -28,14 +28,14 @@ fn kill_session(name: &str) {
 
 pub struct Pane {
     name: String,
-    _dir: tempfile::TempDir,
+    home: tempfile::TempDir,
 }
 
 impl Pane {
     /// Start `shell` interactively in a detached tmux session with the
     /// integration loaded and the `fake-agent-echo` fixture configured.
     fn start(name: &str, shell: &str) -> Pane {
-        Self::start_with(name, shell, "fake-agent-echo", "")
+        Self::start_with(name, shell, "fake-agent-echo", "", "")
     }
 
     /// Like `start`, but names which fixture under `tests/fixtures/` plays
@@ -43,7 +43,13 @@ impl Pane {
     /// when Ctrl-C arrives, not the near-instant echo fixture the other
     /// tests use).
     fn start_with_agent(name: &str, shell: &str, agent: &str) -> Pane {
-        Self::start_with(name, shell, agent, "")
+        Self::start_with(name, shell, agent, "", "")
+    }
+
+    /// Like `start_with_agent`, with `extra_config` appended to the config
+    /// file as top-level keys -- e.g. `spinner: false`.
+    fn start_with_config(name: &str, shell: &str, agent: &str, extra_config: &str) -> Pane {
+        Self::start_with(name, shell, agent, "", extra_config)
     }
 
     /// Like `start`, but injects `extra_rc` into the shell's startup file
@@ -52,10 +58,16 @@ impl Pane {
     /// chaining branch (RISK-03) has something real to chain to, rather
     /// than only ever exercising its no-existing-binding default path.
     fn start_with_extra_rc(name: &str, shell: &str, extra_rc: &str) -> Pane {
-        Self::start_with(name, shell, "fake-agent-echo", extra_rc)
+        Self::start_with(name, shell, "fake-agent-echo", extra_rc, "")
     }
 
-    fn start_with(name: &str, shell: &str, agent: &str, extra_rc: &str) -> Pane {
+    fn start_with(
+        name: &str,
+        shell: &str,
+        agent: &str,
+        extra_rc: &str,
+        extra_config: &str,
+    ) -> Pane {
         let dir = tempfile::tempdir().expect("tempdir");
         let home = dir.path();
         let bin_dir = home.join("bin");
@@ -68,7 +80,7 @@ impl Pane {
         let fixtures = format!("{}/tests/fixtures", env!("CARGO_MANIFEST_DIR"));
         std::fs::write(
             home.join("config.yml"),
-            format!("agent:\n  command: [{fixtures}/{agent}]\n"),
+            format!("agent:\n  command: [{fixtures}/{agent}]\n{extra_config}"),
         )
         .expect("config");
 
@@ -139,7 +151,7 @@ impl Pane {
         std::thread::sleep(Duration::from_millis(900));
         Pane {
             name: name.to_string(),
-            _dir: dir,
+            home: dir,
         }
     }
 
@@ -170,6 +182,49 @@ impl Pane {
             }
             std::thread::sleep(Duration::from_millis(120));
         }
+    }
+
+    /// Poll the pane until `needle` is gone from it, or the timeout expires.
+    fn wait_until_gone(&self, needle: &str, timeout: Duration) {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let text = self.capture();
+            if !text.contains(needle) {
+                return;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!("timed out waiting for {needle:?} to leave the pane\n--- pane ---\n{text}");
+            }
+            std::thread::sleep(Duration::from_millis(30));
+        }
+    }
+
+    /// Poll until Ctrl-L has visibly finished: `gone` has left the scrollback
+    /// and `kept` has been redrawn on screen. Returns the last (screen,
+    /// scrollback) pair either way, for the caller to assert on -- a fixed
+    /// pause here once failed 1 run in 20 under load (0.1.2 D-07).
+    fn wait_for_clear(&self, gone: &str, kept: &str, timeout: Duration) -> (String, String) {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let (screen, history) = (self.capture(), self.capture_history(500));
+            if (!history.contains(gone) && screen.contains(kept)) || Instant::now() > deadline {
+                return (screen, history);
+            }
+            std::thread::sleep(Duration::from_millis(30));
+        }
+    }
+
+    /// Every transcript `ama` has written under this pane's `$HOME`.
+    fn transcripts(&self) -> String {
+        let dir = self.home.path().join(".ama").join("sessions");
+        let mut all = String::new();
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return all;
+        };
+        for entry in entries.flatten() {
+            all.push_str(&std::fs::read_to_string(entry.path()).expect("transcript"));
+        }
+        all
     }
 
     fn capture(&self) -> String {
@@ -273,6 +328,12 @@ fn shell_metacharacters_reach_the_agent_untouched() {
 // regardless of whether `history` recorded anything at all. `clear` first,
 // to remove every on-screen copy, so a later reappearance can only be
 // explained by `history 3` actually listing the command.
+//
+// That used to be a fixed 300 ms sleep and then a check that the pane was
+// clear -- the same race `clear_and_trigger_on_one_line_starts_a_fresh_
+// conversation` had. With all 16 cores busy the check failed 3 runs in 20 on
+// 0.1.1 and 4 in 20 on 0.1.2 (0.1.2 build record, D-06). So it now waits for
+// the copies to actually be gone.
 #[test]
 fn the_question_stays_on_screen_and_in_history() {
     require_tmux!();
@@ -284,12 +345,7 @@ fn the_question_stays_on_screen_and_in_history() {
         "the question must remain visible on screen\n{pane}"
     );
     p.send("clear");
-    std::thread::sleep(Duration::from_millis(300));
-    let cleared = p.capture();
-    assert!(
-        !cleared.contains("remember me"),
-        "sanity check: clear should have wiped the pane\n{cleared}"
-    );
+    p.wait_until_gone("remember me", Duration::from_secs(10));
     p.send("history 3");
     let pane = p.wait_for("remember me", Duration::from_secs(5));
     assert!(
@@ -321,11 +377,17 @@ fn ordinary_commands_are_unaffected() {
 // wipes turn 1's own "🤖:" from the pane, so the two can never be visible
 // at once, but if `wait_for`'s very first poll lands before `clear` has
 // run, it finds turn 1's still-present "🤖:" and returns immediately,
-// having proven nothing about turn 2. A short settle first -- comfortably
-// longer than `clear` (a trivial, near-instant subprocess) needs, much
-// shorter than the full second-turn round trip -- removes that window, so
-// the subsequent `wait_for("🤖:", ..)` can only be satisfied by turn 2's
-// real answer.
+// having proven nothing about turn 2.
+//
+// This used to be closed with a fixed 300 ms settle, on the reasoning that
+// `clear` is near-instant. It is -- but the settle has to cover the whole
+// path from `send-keys` to `clear` running, and under load that path is
+// the slow part. With all 16 cores of the 0.1.2 build machine busy, the
+// fixed settle failed 4 runs in 20 on 0.1.1 and 5 in 20 on 0.1.2, every
+// time with the pane still showing turn 1 and not even the echo of the
+// typed line (0.1.2 build record, D-04). So it now waits for the event
+// itself: turn 1's text leaving the pane, which only `clear` can cause.
+// After that, `wait_for("🤖:", ..)` can only be satisfied by turn 2.
 //
 // What this test can and cannot prove, run against a pane-height fixed at
 // 24 rows: with the original racy needle, deleting the clear-triggered
@@ -344,7 +406,7 @@ fn clear_and_trigger_on_one_line_starts_a_fresh_conversation() {
     p.send("@@ first question");
     p.wait_for("🤖:", Duration::from_secs(10));
     p.send("clear && @@ show me the joke of the day");
-    std::thread::sleep(Duration::from_millis(300));
+    p.wait_until_gone("first question", Duration::from_secs(10));
     let pane = p.wait_for("🤖:", Duration::from_secs(10));
     assert!(pane.contains("joke of the day"), "{pane}");
     assert!(
@@ -805,15 +867,17 @@ fn ctrl_l_clears_the_screen_and_scrollback_without_losing_the_typed_line() {
     p.send_raw("echo HALF-TYPED-COMMAND");
     std::thread::sleep(Duration::from_millis(400));
     p.send_raw("C-l");
-    std::thread::sleep(Duration::from_millis(400));
+    let (pane, history) = p.wait_for_clear(
+        "SCROLLBACK-MARKER",
+        "echo HALF-TYPED-COMMAND",
+        Duration::from_secs(5),
+    );
 
-    let pane = p.capture();
     assert!(
         pane.contains("echo HALF-TYPED-COMMAND"),
         "Ctrl-L must preserve the in-progress line, not just clear the screen\n{pane}"
     );
 
-    let history = p.capture_history(500);
     assert!(
         !history.contains("SCROLLBACK-MARKER"),
         "Ctrl-L must actually clear the screen and drop scrollback, \
@@ -892,15 +956,17 @@ fn ctrl_l_clears_the_screen_and_scrollback_without_losing_the_typed_line_in_zsh(
     p.send_raw("echo HALF-TYPED-COMMAND");
     std::thread::sleep(Duration::from_millis(400));
     p.send_raw("C-l");
-    std::thread::sleep(Duration::from_millis(400));
+    let (pane, history) = p.wait_for_clear(
+        "SCROLLBACK-MARKER",
+        "echo HALF-TYPED-COMMAND",
+        Duration::from_secs(5),
+    );
 
-    let pane = p.capture();
     assert!(
         pane.contains("echo HALF-TYPED-COMMAND"),
         "Ctrl-L must preserve the in-progress line, not just clear the screen\n{pane}"
     );
 
-    let history = p.capture_history(500);
     assert!(
         !history.contains("SCROLLBACK-MARKER"),
         "Ctrl-L must also drop scrollback (ama.bash does this too), \
@@ -967,12 +1033,11 @@ fn an_existing_accept_line_widget_is_chained_not_clobbered_in_zsh() {
     // Reset the screen so the next appearance can only be explained by the
     // `true` below, not by earlier probe output still sitting on screen.
     p.send("clear");
-    std::thread::sleep(Duration::from_millis(300));
-    let cleared = p.capture();
-    assert!(
-        !cleared.contains("CHAIN-PROBE-RAN"),
-        "sanity check: clear should have wiped the pane\n{cleared}"
-    );
+    // Wait for the pane to be clear rather than pausing a fixed 300 ms: the
+    // same shape that made two other tests flaky under load (0.1.2 D-04,
+    // D-06). This one held 20 runs in 20 under load -- the change is
+    // preventive.
+    p.wait_until_gone("CHAIN-PROBE-RAN", Duration::from_secs(10));
 
     p.send("true");
     let pane = p.wait_for("CHAIN-PROBE-RAN", Duration::from_secs(5));
@@ -980,4 +1045,320 @@ fn an_existing_accept_line_widget_is_chained_not_clobbered_in_zsh() {
         pane.contains("CHAIN-PROBE-RAN"),
         "the pre-existing widget must still be chained after repeated installs\n{pane}"
     );
+}
+
+// ---- 0.1.2: the moon while the agent thinks --------------------------------
+//
+// Everything here runs against `fake-agent-thinking` or `fake-agent-chatty`,
+// which stay quiet (or talk only on stderr) long enough for the moon to be
+// sampled. Samples are taken every 30 ms rather than `wait_for`'s 120 ms:
+// the moon moves every 100 ms, and these tests are about seeing it move.
+
+/// The eight phases, written out here rather than taken from `spinner.rs`,
+/// so that a wrong glyph there cannot also be the expectation here.
+const MOONS: [char; 8] = ['🌑', '🌒', '🌓', '🌔', '🌕', '🌖', '🌗', '🌘'];
+
+/// The phase on a line that is exactly the moon: `🤖`, a space, one phase.
+fn moon_line(line: &str) -> Option<char> {
+    let mut rest = line.trim_end().strip_prefix("🤖 ")?.chars();
+    match (rest.next(), rest.next()) {
+        (Some(c), None) if MOONS.contains(&c) => Some(c),
+        _ => None,
+    }
+}
+
+fn moons_on(text: &str) -> Vec<char> {
+    text.chars().filter(|c| MOONS.contains(c)).collect()
+}
+
+impl Pane {
+    /// Like `capture`, with lines the terminal soft-wrapped joined back up
+    /// (`-J`). A diagnostic naming a fixture by its absolute path is longer
+    /// than the pane is wide, and would otherwise be split mid-sentence.
+    fn capture_joined(&self) -> String {
+        let out = Command::new("tmux")
+            .args(["capture-pane", "-t", &self.name, "-p", "-J"])
+            .output()
+            .expect("capture-pane");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// Poll until a transcript under this pane's `$HOME` mentions `needle`.
+    /// `ama` writes it after the answer's last line reaches the screen, so
+    /// seeing that line is not yet proof the transcript exists.
+    fn wait_for_transcript(&self, needle: &str, timeout: Duration) -> String {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let all = self.transcripts();
+            if all.contains(needle) {
+                return all;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for a transcript mentioning {needle:?}: {all:?}"
+            );
+            std::thread::sleep(Duration::from_millis(30));
+        }
+    }
+
+    /// Poll quickly until a moon line is on screen.
+    fn wait_for_moon(&self, timeout: Duration) -> String {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let pane = self.capture();
+            if pane.lines().any(|l| moon_line(l).is_some()) {
+                return pane;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for the moon\n--- pane ---\n{pane}"
+            );
+            std::thread::sleep(Duration::from_millis(30));
+        }
+    }
+}
+
+/// REQ-35, REQ-36, RISK-17 -- with the owner's own words for a prompt.
+///
+/// `fake-agent-thinking` is silent for 2 s and then echoes its whole prompt
+/// back, so this one test sees everything the feature promises: the moon
+/// arrives at once, it moves, and it leaves nothing behind. Not on the
+/// screen, not in the transcript, and not in the prompt -- where a captured
+/// frame would come straight back in the echoed answer.
+#[test]
+fn the_moon_waxes_while_the_agent_thinks() {
+    require_tmux!();
+    let p = Pane::start_with_agent("ama-e2e-moon", "bash", "fake-agent-thinking");
+    p.send("@@ whats weather?");
+    let sent = Instant::now();
+
+    let mut first_moon = None;
+    let mut phases: Vec<char> = Vec::new();
+    loop {
+        let pane = p.capture();
+        if pane.contains("🤖:") {
+            break;
+        }
+        if let Some(phase) = pane.lines().find_map(moon_line) {
+            first_moon.get_or_insert(sent.elapsed());
+            if phases.last() != Some(&phase) {
+                phases.push(phase);
+            }
+        }
+        assert!(
+            sent.elapsed() < Duration::from_secs(10),
+            "no answer\n--- pane ---\n{pane}"
+        );
+        std::thread::sleep(Duration::from_millis(30));
+    }
+
+    let first = first_moon.expect("the moon never showed before the answer");
+    assert!(first < Duration::from_secs(1), "the moon took {first:?}");
+    let distinct: std::collections::HashSet<&char> = phases.iter().collect();
+    assert!(
+        distinct.len() >= 3,
+        "a static glyph, not an animation: {phases:?}"
+    );
+
+    // The echoed question is the answer's last line. The moon was erased
+    // before the answer's first byte, so there is nothing left to wait for
+    // on screen; the transcript is written a moment later, so poll for it.
+    let pane = p.wait_for("   whats weather?", Duration::from_secs(5));
+    assert!(
+        moons_on(&pane).is_empty(),
+        "the moon left a trace on screen or in the prompt\n{pane}"
+    );
+    let transcripts = p.wait_for_transcript("whats weather?", Duration::from_secs(5));
+    assert!(
+        moons_on(&transcripts).is_empty(),
+        "the moon reached the transcript: {transcripts}"
+    );
+    // serde_json writes a raw ESC as the six characters `\u001b`.
+    assert!(
+        !transcripts.contains("\\u001b"),
+        "an escape sequence reached the transcript: {transcripts}"
+    );
+}
+
+/// REQ-38 -- the codex case (F-14), where each of thirty progress lines on
+/// stderr would otherwise get a moon glued to the front of it.
+#[test]
+fn agent_stderr_keeps_its_own_lines_while_the_moon_is_up() {
+    require_tmux!();
+    let p = Pane::start_with_agent("ama-e2e-moon-stderr", "bash", "fake-agent-chatty");
+    p.send("@@ what are you doing");
+
+    // During the first pause, the moon belongs on the line below the
+    // finished stderr line -- still showing, not given up on.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let pane = p.capture();
+        let lines: Vec<&str> = pane.lines().map(str::trim_end).collect();
+        if lines
+            .windows(2)
+            .any(|w| w[0] == "progress one" && moon_line(w[1]).is_some())
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no moon below the stderr line\n--- pane ---\n{pane}"
+        );
+        std::thread::sleep(Duration::from_millis(30));
+    }
+
+    let pane = p.wait_for("🤖: the answer", Duration::from_secs(10));
+    let lines: Vec<&str> = pane.lines().map(str::trim_end).collect();
+    assert!(lines.contains(&"progress one"), "{pane}");
+    // Written in two pieces with a pause between: a moon drawn over the
+    // unfinished half would have erased `partial`.
+    assert!(lines.contains(&"partial line"), "{pane}");
+    assert!(moons_on(&pane).is_empty(), "{pane}");
+}
+
+/// REQ-36: with no answer to take the moon's place, `ama`'s own diagnostic
+/// must still begin on a clean line, not after a frame left behind.
+#[test]
+fn a_silent_agent_is_reported_on_a_clean_line() {
+    require_tmux!();
+    let p = Pane::start_with_agent("ama-e2e-moon-silent", "bash", "fake-agent-silent");
+    p.send("@@ say nothing");
+    let needle = "exited without producing any output";
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let pane = loop {
+        let pane = p.capture_joined();
+        if pane.contains(needle) {
+            break pane;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {needle:?}\n--- pane ---\n{pane}"
+        );
+        std::thread::sleep(Duration::from_millis(30));
+    };
+    let line = pane
+        .lines()
+        .find(|l| l.contains(needle))
+        .expect("the diagnostic");
+    assert!(line.starts_with("ama: "), "{line:?}\n--- pane ---\n{pane}");
+    assert!(moons_on(&pane).is_empty(), "{pane}");
+}
+
+/// REQ-39: `spinner: false` shows no moon at any point while the agent
+/// thinks, and the answer still arrives.
+#[test]
+fn the_moon_can_be_turned_off() {
+    require_tmux!();
+    let p = Pane::start_with_config(
+        "ama-e2e-moon-off",
+        "bash",
+        "fake-agent-thinking",
+        "spinner: false\n",
+    );
+    p.send("@@ whats weather?");
+    let sent = Instant::now();
+    loop {
+        let pane = p.capture();
+        if pane.contains("🤖:") {
+            break;
+        }
+        assert!(
+            moons_on(&pane).is_empty(),
+            "the moon showed with `spinner: false`\n{pane}"
+        );
+        assert!(
+            sent.elapsed() < Duration::from_secs(10),
+            "no answer\n--- pane ---\n{pane}"
+        );
+        std::thread::sleep(Duration::from_millis(30));
+    }
+}
+
+/// RISK-15: Ctrl-C while the moon is up must behave as it always has --
+/// `$?` is 130, and the shell keeps taking commands. The moon adds a thread
+/// and no signal handling, and neither may change that.
+#[test]
+fn an_interrupt_during_the_moon_returns_a_usable_shell() {
+    require_tmux!();
+    let p = Pane::start_with_agent("ama-e2e-moon-interrupt", "bash", "fake-agent-thinking");
+    p.send("@@ whats weather?");
+    p.wait_for_moon(Duration::from_secs(5));
+    p.send_raw("C-c");
+    std::thread::sleep(Duration::from_millis(400));
+    p.send("echo rc=$?");
+    p.wait_for("rc=130", Duration::from_secs(5));
+    p.send("echo SHELL-ALIVE");
+    p.wait_for("SHELL-ALIVE", Duration::from_secs(5));
+}
+
+/// ADR-010: the moon is drawn by the binary, not the hook, so the other
+/// shell gets it without a line of `ama.zsh` changing.
+#[test]
+fn the_moon_waxes_in_zsh_too() {
+    require_tmux!();
+    if !have("zsh") {
+        eprintln!("skipping: zsh not installed");
+        return;
+    }
+    let p = Pane::start_with_agent("ama-e2e-moon-zsh", "zsh", "fake-agent-thinking");
+    p.send("@@ whats weather?");
+    p.wait_for_moon(Duration::from_secs(5));
+    let pane = p.wait_for("   whats weather?", Duration::from_secs(10));
+    assert!(moons_on(&pane).is_empty(), "{pane}");
+}
+
+/// RISK-18 (review finding I-1). Enter pressed while the moon is up is
+/// echoed by the terminal, which moves the cursor down and strands the last
+/// frame on the line above. On screen that is cosmetic. Captured as the next
+/// turn's context it is not: it would reach the agent as if typed. The
+/// fixture echoes each prompt back whole, and the transcript records it, so
+/// a stranded frame in turn 2's context would show up here.
+#[test]
+fn an_enter_pressed_mid_think_never_puts_the_moon_in_the_next_prompt() {
+    require_tmux!();
+    let p = Pane::start_with_agent("ama-e2e-moon-enter", "bash", "fake-agent-thinking");
+    p.send("@@ whats weather?");
+    p.wait_for_moon(Duration::from_secs(5));
+    p.send_raw("Enter");
+    std::thread::sleep(Duration::from_millis(250));
+    p.send_raw("Enter");
+    p.wait_for("   whats weather?", Duration::from_secs(10));
+
+    p.send("@@ second turn");
+    p.wait_for("   second turn", Duration::from_secs(10));
+    let transcripts = p.wait_for_transcript("second turn", Duration::from_secs(5));
+    assert!(
+        moons_on(&transcripts).is_empty(),
+        "a stranded frame was sent as context: {transcripts}"
+    );
+}
+
+/// ADR-012, and review finding M3. The agent's stderr is a pipe only while
+/// the moon is showing on a terminal. Whenever `ama`'s own stderr is not
+/// that terminal, the agent gets `ama`'s stderr itself, as in 0.1.1.
+#[test]
+fn the_agents_stderr_is_routed_only_while_the_moon_shares_its_terminal() {
+    require_tmux!();
+    let p = Pane::start_with_agent("ama-e2e-moon-stderr-kind", "bash", "fake-agent-stderr-kind");
+    p.send("@@ what is your stderr");
+    p.wait_for("🤖: stderr is a pipe", Duration::from_secs(10));
+    // stdout is still the terminal here, so the moon still shows -- but
+    // stderr goes elsewhere, so there is nothing to keep off its line.
+    p.send("ama ask -- what is your stderr 2>/dev/null");
+    p.wait_for("🤖: stderr is something else", Duration::from_secs(10));
+}
+
+/// REQ-39 / RISK-13. `spinner: false` is the escape hatch for an agent that
+/// misbehaves on a piped stderr, so it must hand the agent the terminal back.
+#[test]
+fn spinner_false_hands_the_agent_its_terminal_back() {
+    require_tmux!();
+    let p = Pane::start_with_config(
+        "ama-e2e-moon-stderr-off",
+        "bash",
+        "fake-agent-stderr-kind",
+        "spinner: false\n",
+    );
+    p.send("@@ what is your stderr");
+    p.wait_for("🤖: stderr is a terminal", Duration::from_secs(10));
 }

@@ -10,3 +10,4 @@ pub mod prompt;
 pub mod render;
 pub mod session;
 pub mod shellinit;
+pub mod spinner;

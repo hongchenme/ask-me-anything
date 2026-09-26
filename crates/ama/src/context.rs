@@ -1,6 +1,7 @@
 //! Where the conversation's context comes from (ADR-002).
 
 use crate::session::{self, SessionKey};
+use crate::spinner;
 
 /// Rendered answers are marked so that slicing can tell the agent's words
 /// apart from the user's commands.
@@ -118,6 +119,24 @@ pub fn trim_trailing_blank(lines: &[String]) -> &[String] {
     &lines[..end]
 }
 
+/// Take the moon's leftovers out of a screen capture (RISK-18).
+///
+/// A frame stranded by the user's own keys -- Enter pressed while the moon
+/// was up, or Ctrl-C -- is still on screen when the next turn captures it.
+/// Left in, it would reach the agent as if the user had typed it. A line
+/// that is only a frame is dropped. A frame followed by something else keeps
+/// the something else: `^C`, or keys the terminal echoed onto its line.
+pub fn without_moon_frames(lines: Vec<String>) -> Vec<String> {
+    lines
+        .into_iter()
+        .filter_map(|line| match spinner::strip_frame(&line) {
+            None => Some(line),
+            Some(rest) if rest.trim().is_empty() => None,
+            Some(rest) => Some(rest.to_string()),
+        })
+        .collect()
+}
+
 /// Keep the most recent `max` lines (NFR-02).
 pub fn cap(lines: &[String], max: usize) -> &[String] {
     if lines.len() <= max {
@@ -181,7 +200,7 @@ pub fn gather(source: Source, key: &SessionKey, max: usize) -> Vec<String> {
         Source::Transcript => None,
     };
     let lines = match captured {
-        Some(pane) => select_context(trim_trailing_blank(&pane)).to_vec(),
+        Some(pane) => select_context(trim_trailing_blank(&without_moon_frames(pane))).to_vec(),
         None => from_transcript(key),
     };
     cap(&lines, max).to_vec()
