@@ -116,13 +116,30 @@ Recognition order is deterministic, because the alternatives are ambiguous for a
 that itself contains `&&`:
 
 1. Buffer begins with the trigger, ignoring leading whitespace → prefix is empty.
-2. Otherwise the **last** `;`, `&&`, `||`, or `|` followed by whitespace and the
-   trigger → everything up to and including that operator is the prefix.
+2. Otherwise, take the text before the **first** trigger. If it ends with `;`, `&&`,
+   `||`, or `|` and optional whitespace, that text is the prefix and the remainder is
+   the prompt.
 3. Otherwise not a trigger line; chain to the previous binding.
 
-Checking line-start first means `@@ compare a && @@ b` is one prompt, not a prefix and
-a prompt. A prompt that merely contains an operator (`@@ list *.rs | grep foo`) matches
-neither rule 2's trailing-trigger requirement nor anything else, and falls to rule 1.
+**The earliest trigger always wins.** `@@ compare a && @@ b` is one prompt by rule 1,
+and `clear && @@ compare a && @@ b` splits at the *first* trigger by rule 2 — prefix
+`clear && `, prompt `compare a && @@ b`. A prompt that merely contains an operator
+(`@@ list *.rs | grep foo`) is caught by rule 1 and never reaches rule 2.
+
+**Amendment A-03, 2026-09-26 (during S4).** Rule 2 originally said "the **last**
+operator", which a greedy regex implements naturally. Task 1's review demonstrated the
+result is incoherent: `@@ compare a && @@ b` was one prompt, but adding a leading
+`clear && ` made the same text split at the *second* trigger, pushing `@@ compare a &&`
+back into the user's buffer as text to execute while the agent received only `b`. Rule 1
+exists precisely so the earliest trigger wins, so the original rule 2 contradicted the
+decision's own principle. Rule 2 now matches it.
+
+Implementation note: POSIX ERE has no lazy quantifier, so rule 2 is implemented with
+parameter expansion (`${line%%"@@ "*}`) rather than a regex, guarded by a `*"@@ "*`
+test — without that guard the expansion returns the whole line and an unrelated
+`echo a; ` would split spuriously. The trailing-operator test keeps its pattern in a
+single-quoted variable: inlining `[;&|]` after `=~` fails because bash's lexer
+tokenizes `;&` as the case-fallthrough operator before the regex engine ever sees it.
 
 **Consequence:** `clear && @@ …` needs no special handling for context reset on the
 tmux path — `clear` runs first, so the pane is already empty when `@@` scrapes it.

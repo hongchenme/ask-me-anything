@@ -42,7 +42,7 @@ maps requirement groups to the test layers defined in
 | REQ-04 | The typed question remains visible on screen and in shell history after the turn. | tmux e2e: pane contains the question above the answer; `history` shows the entry. |
 | REQ-05 | Ctrl-C during a turn interrupts the agent and returns a usable prompt. | tmux e2e: interrupt a slow fake agent; shell survives and the next command runs. |
 | REQ-06 | An empty prompt (`@@ ` alone) is a no-op, not an agent call. | tmux e2e: no agent process spawned, no error. |
-| REQ-28 | The trigger is recognised at the start of the line (ignoring leading whitespace) **and** at a command position after `;`, `&&`, `\|\|`, or `\|`. The preceding commands run first, unmodified. | tmux e2e: `clear && @@ joke` clears the screen, then answers with no prior context. Unit: split fixtures for line-start, leading whitespace, `&&`, `;`, and a prompt that merely *contains* `\|` or `&&`. |
+| REQ-28 | The trigger is recognised at the start of the line (ignoring leading whitespace) **and** at a command position after `;`, `&&`, `\|\|`, or `\|`. The preceding commands run first, unmodified. The **earliest** trigger on the line always wins (ADR-006, as amended by A-03). | tmux e2e: `clear && @@ joke` clears the screen, then answers with no prior context. Unit: split fixtures for line-start, leading whitespace, `&&`, `;`, a prompt that merely *contains* `\|` or `&&`, and `clear && @@ compare a && @@ b` splitting at the first trigger. |
 
 ### Answering
 

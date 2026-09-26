@@ -56,6 +56,7 @@ returns to S2, not silent scope changes.
 | ID | Date | Change | Impact |
 |---|---|---|---|
 | A-01 | 2026-09-26 | **REQ-28 added.** README example 3 is `clear && @@ show me the joke of the day`, so the trigger is not always at the start of the line — an assumption every capture requirement had made. ADR-006 defines the recognition order. | One extra branch in the shell hook and a unit-tested split function. No architecture, tier, or other requirement affected. |
+| A-03 | 2026-09-26 | **ADR-006 rule 2 inverted: the earliest trigger wins.** Task 1's review showed the original "last operator" rule was incoherent — `@@ compare a && @@ b` was one prompt, but a leading `clear && ` made the same text split at the *second* trigger, pushing `@@ compare a &&` back into the user's buffer as executable text. Rule 1 exists so the earliest trigger wins, so the old rule 2 contradicted its own decision. | One branch reimplemented with parameter expansion instead of a regex, plus a fixture. Found by review, not shipped. |
 | A-02 | 2026-09-26 | **Rust `escape` module removed.** Nothing in Rust ever escapes: `@@` receives arguments the shell already parsed. Splitting and quoting must happen in the hook, since routing every Enter press through a subprocess would violate NFR-01. Both now live in the shell scripts, property-tested from Rust by driving the real shell. | Strictly better evidence — the oracle is now the shell that actually runs the code, not a Rust reimplementation of it. |
 
 ## Decisions carried into this cycle
