@@ -45,8 +45,8 @@ fn default_max_context_lines() -> usize {
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
     #[error(
-        "no config at {0}\n\nCreate it with:\n\n  mkdir -p ~/.qmx2\n  \
-         printf 'agent: claude --model opus --effort high\\n' > ~/.qmx2/config.yml"
+        "no config at {0}\n\nCreate it with:\n\n  mkdir -p \"$(dirname {0})\"\n  \
+         printf 'agent: claude --model opus --effort high\\n' > {0}"
     )]
     Missing(PathBuf),
     #[error("could not read {path}: {source}")]

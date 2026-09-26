@@ -105,6 +105,20 @@ fn a_missing_file_says_where_it_should_be() {
 }
 
 #[test]
+fn a_missing_file_remedy_names_the_path_it_actually_checked() {
+    let err = Config::load(std::path::Path::new("/nonexistent/custom/ama.yml")).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("/nonexistent/custom/ama.yml"),
+        "remedy must name the real path: {msg}"
+    );
+    assert!(
+        !msg.contains(".qmx2"),
+        "remedy must not point elsewhere: {msg}"
+    );
+}
+
+#[test]
 fn malformed_yaml_names_the_problem_and_does_not_panic() {
     let (_d, p) = write_cfg("agent: [unclosed\n");
     assert!(matches!(
