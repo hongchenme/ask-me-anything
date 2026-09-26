@@ -54,6 +54,28 @@ pub fn slice_from_first_trigger(lines: &[String]) -> &[String] {
     }
 }
 
+/// Drop the run of blank rows at the very end of a pane capture.
+///
+/// `tmux capture-pane -p` and `screen -X hardcopy` both pad their dump out to
+/// the pane's full height: every row below the cursor that has never been
+/// written to comes back as an empty line. Left alone, that padding becomes
+/// part of the "context" `slice_from_first_trigger` returns whenever the
+/// trigger line is not the pane's last line -- which is the common case
+/// right after `clear`, or on the very first `@@` in a fresh pane -- bloating
+/// every turn with dozens of contentless lines. Only a real terminal
+/// exhibits this padding; `slice_from_first_trigger`'s own unit tests all
+/// use hand-built fixtures that stop exactly at the last real line, so nothing
+/// caught it until Task 7's tmux end-to-end suite exercised a real capture.
+/// Trimming here, before slicing, is simplest: `slice_from_first_trigger`
+/// keeps its existing "start-to-end-of-slice" contract unchanged.
+pub fn trim_trailing_blank(lines: &[String]) -> &[String] {
+    let end = lines
+        .iter()
+        .rposition(|l| !l.trim().is_empty())
+        .map_or(0, |i| i + 1);
+    &lines[..end]
+}
+
 /// Keep the most recent `max` lines (NFR-02).
 pub fn cap(lines: &[String], max: usize) -> &[String] {
     if lines.len() <= max {
@@ -117,7 +139,7 @@ pub fn gather(source: Source, key: &SessionKey, max: usize) -> Vec<String> {
         Source::Transcript => None,
     };
     let lines = match captured {
-        Some(pane) => slice_from_first_trigger(&pane).to_vec(),
+        Some(pane) => slice_from_first_trigger(trim_trailing_blank(&pane)).to_vec(),
         None => from_transcript(key),
     };
     cap(&lines, max).to_vec()

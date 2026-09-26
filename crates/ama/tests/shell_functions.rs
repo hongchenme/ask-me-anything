@@ -132,3 +132,76 @@ fn survives_an_embedded_newline_from_bracketed_paste() {
         Some((String::new(), "first line\nsecond line".into()))
     );
 }
+
+/// Whether `__ama_hook` calls `ama session reset` for a given `READLINE_LINE`.
+///
+/// A real terminal cannot observe this directly: `clear` itself already
+/// wipes any pane-based context regardless of whether this call happens, so
+/// Task 7's tmux end-to-end suite has no way to tell "the call fired" apart
+/// from "the terminal's own `clear` did all the work" -- confirmed by
+/// mutation there (deleting the call left `e2e_shell.rs`'s
+/// `clear_and_trigger_on_one_line_starts_a_fresh_conversation` passing
+/// 6 times out of 6, unchanged). This pins the wiring directly instead: a
+/// stub `ama` shell function shadows the real binary and records whether it
+/// was ever invoked with `session reset`. `__ama_hook` and `__ama_install`
+/// (called unconditionally when the file is sourced) both need readline
+/// machinery, hence `bash -i` -- verified separately to work with piped,
+/// non-tty input; the only cost is two harmless "no job control" warnings
+/// on stderr, discarded here like the round-trip helpers above discard
+/// unrelated stderr.
+fn calls_session_reset_for(line: &str) -> bool {
+    let log = std::env::temp_dir().join(format!(
+        "ama-test-session-reset-{}-{:x}",
+        std::process::id(),
+        line.len()
+    ));
+    let _ = std::fs::remove_file(&log);
+    let script = format!(
+        r#"ama() {{ printf '%s\n' "$*" >> '{log}'; }}
+           source '{BASH_SRC}'
+           READLINE_LINE=$1
+           READLINE_POINT=${{#READLINE_LINE}}
+           __ama_hook"#,
+        log = log.display(),
+    );
+    let out = Command::new("bash")
+        .args(["-i", "-c", &script, "ama-test", line])
+        .output()
+        .expect("spawn bash");
+    assert!(
+        out.status.success(),
+        "bash failed: {out:?}\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let called = std::fs::read_to_string(&log).is_ok_and(|s| s.contains("session reset"));
+    let _ = std::fs::remove_file(&log);
+    called
+}
+
+#[test]
+fn clearing_the_screen_before_a_trigger_resets_the_session() {
+    assert!(calls_session_reset_for("clear && @@ fresh start"));
+}
+
+#[test]
+fn resetting_the_screen_before_a_trigger_also_resets_the_session() {
+    assert!(calls_session_reset_for("reset && @@ fresh start"));
+}
+
+#[test]
+fn an_ordinary_trigger_does_not_reset_the_session() {
+    assert!(!calls_session_reset_for("@@ carry on"));
+}
+
+#[test]
+fn a_bare_clear_with_no_trigger_also_resets_the_session() {
+    // The non-trigger fallback branch of `__ama_hook` (a plain typed
+    // `clear`, or Ctrl-L, not part of any `@@` line) must reset too,
+    // independent of the trigger-rewrite branch above.
+    assert!(calls_session_reset_for("clear"));
+}
+
+#[test]
+fn an_ordinary_command_does_not_reset_the_session() {
+    assert!(!calls_session_reset_for("echo hi"));
+}

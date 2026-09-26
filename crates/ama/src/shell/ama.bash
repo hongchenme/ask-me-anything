@@ -35,3 +35,62 @@ __ama_split() {
     fi
     return 1
 }
+
+# ---- interactive integration ------------------------------------------------
+# Nothing to do in a non-interactive shell (REQ-24).
+case $- in *i*) ;; *) return 0 2>/dev/null || exit 0 ;; esac
+
+# A stable per-shell identity for the transcript fallback.
+export AMA_SESSION="$$"
+
+__ama_clears_screen() {
+    case $1 in
+        clear | reset | 'clear '* | 'reset '* | *'tput clear'*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+__ama_hook() {
+    local split prefix prompt
+    if split=$(__ama_split "$READLINE_LINE"); then
+        prefix=${split%%$'\x1f'*}
+        prompt=${split#*$'\x1f'}
+        # A blank prompt is a no-op, not an agent call (REQ-06).
+        if [[ -z ${prompt//[[:space:]]/} ]]; then
+            READLINE_LINE=""
+            READLINE_POINT=0
+            return 0
+        fi
+        # `clear && @@ ...`: drop the transcript now, since the pane-scrape
+        # path resets itself but the fallback path has no other signal.
+        __ama_clears_screen "$prefix" && ama session reset >/dev/null 2>&1
+        READLINE_LINE="${prefix}@@ $(__ama_sq "$prompt")"
+        READLINE_POINT=${#READLINE_LINE}
+        return 0
+    fi
+    __ama_clears_screen "$READLINE_LINE" && ama session reset >/dev/null 2>&1
+    return 0
+}
+
+__ama_clear_screen_widget() {
+    ama session reset >/dev/null 2>&1
+    READLINE_LINE=""
+    READLINE_POINT=0
+    printf '\033[H\033[2J'
+}
+
+# Chain to whatever already owns Enter (RISK-03) instead of clobbering it.
+__ama_install() {
+    local existing
+    existing=$(bind -s 2>/dev/null | sed -n 's/^"\\C-m": "\(.*\)"$/\1/p' | head -n1)
+    bind -x '"\C-x\C-aq": __ama_hook' 2>/dev/null || return 0
+    if [[ -n $existing && $existing != *'\C-x\C-aq'* ]]; then
+        bind "\"\\C-m\": \"\\C-x\\C-aq${existing}\"" 2>/dev/null
+    else
+        # \C-j is also accept-line and is left unbound, so the macro terminates.
+        bind '"\C-m": "\C-x\C-aq\C-j"' 2>/dev/null
+    fi
+    bind -x '"\C-l": __ama_clear_screen_widget' 2>/dev/null
+}
+
+__ama_install

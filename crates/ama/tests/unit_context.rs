@@ -75,6 +75,53 @@ fn a_stray_answer_fragment_before_the_real_trigger_does_not_pollute_the_start() 
 }
 
 #[test]
+fn trailing_blank_rows_below_the_cursor_are_dropped() {
+    // What `tmux capture-pane -p` returns for a pane where only the first
+    // two rows have ever been written to: the real content, then padding
+    // out to the pane's full height.
+    let mut pane = lines("user@host:~$ @@ 'hi'\n🤖: hello");
+    pane.extend((0..20).map(|_| String::new()));
+    assert_eq!(context::trim_trailing_blank(&pane).len(), 2);
+}
+
+#[test]
+fn a_wholly_blank_pane_trims_to_nothing() {
+    let pane = lines("\n\n\n");
+    assert!(context::trim_trailing_blank(&pane).is_empty());
+}
+
+#[test]
+fn trim_trailing_blank_leaves_an_already_full_pane_untouched() {
+    let pane = lines("user@host:~$ @@ 'hi'\n🤖: hello");
+    assert_eq!(context::trim_trailing_blank(&pane), pane.as_slice());
+}
+
+#[test]
+fn a_blank_line_in_the_middle_is_not_trimmed_only_the_trailing_run_is() {
+    // A blank line the user's own command legitimately produced (or a blank
+    // line inside a multi-line pasted question) must survive; only the
+    // padding run at the very end is padding.
+    let pane = lines("user@host:~$ @@ 'hi'\n\n🤖: hello");
+    let got = context::trim_trailing_blank(&pane);
+    assert_eq!(got.len(), 3, "got {got:?}");
+}
+
+#[test]
+fn trimming_before_slicing_is_the_order_gather_uses_and_it_matters() {
+    // `gather` calls `trim_trailing_blank` before `slice_from_first_trigger`
+    // (not after): trimming first shortens the slice's search space so
+    // padding can never survive past the trigger line either. Padding after
+    // the trigger must not reach the agent as bloat, and -- echoed back by a
+    // verification fixture in a real terminal -- is exactly what pushed
+    // genuine content off the visible pane before Task 7's tmux suite ever
+    // observed it.
+    let mut pane = lines("user@host:~$ @@ 'hi'");
+    pane.extend((0..20).map(|_| String::new()));
+    let got = context::slice_from_first_trigger(context::trim_trailing_blank(&pane));
+    assert_eq!(got.len(), 1, "padding leaked into context: {got:?}");
+}
+
+#[test]
 fn the_cap_keeps_the_most_recent_lines() {
     let many: Vec<String> = (0..1000).map(|i| format!("line {i}")).collect();
     let got = context::cap(&many, 200);

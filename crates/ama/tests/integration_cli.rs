@@ -253,3 +253,66 @@ fn an_unrunnable_agent_command_exits_two() {
             "definitely-not-an-installed-program",
         ));
 }
+
+#[test]
+fn init_bash_emits_a_syntactically_valid_script() {
+    let out = Command::cargo_bin("ama")
+        .expect("bin")
+        .args(["init", "bash"])
+        .output()
+        .expect("run");
+    assert!(out.status.success());
+    let script = String::from_utf8_lossy(&out.stdout);
+    assert!(script.contains("__ama_hook"), "hook missing");
+    let mut check = Command::new("bash");
+    check
+        .args(["-n", "/dev/stdin"])
+        .write_stdin(script.as_bytes().to_vec());
+    check.assert().success();
+}
+
+#[test]
+fn init_rejects_an_unknown_shell() {
+    Command::cargo_bin("ama")
+        .expect("bin")
+        .args(["init", "fish"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("bash"));
+}
+
+// The brief's original version of this test appended a bare `exit 0` and
+// asserted only `.success()`. That is non-discriminating: under a plain
+// `bash -c` invocation (no enclosing function or sourced-file context),
+// REQ-24's guard's own `return 0` always fails ("can only `return' from a
+// function or sourced script"), falls through to `exit 0`, and that `exit`
+// terminates the whole `-c` process immediately -- so the appended `exit 0`
+// never even runs, and `.success()` passes for that reason alone. Worse,
+// even the mutation that drops the guard's `|| exit 0` fallback (leaving a
+// bare `return 0 2>/dev/null`, which also fails and this time has nothing to
+// fall back to) lets `export AMA_SESSION=...` and `__ama_install`'s `bind`
+// calls run for real, yet *still* exits 0 with empty stderr under `bash -c`
+// -- `bind` silently succeeds even with no readline/tty active -- so the
+// original assertion could not fail either way.
+//
+// Assert on the guard's actual, specific, observable effect instead: append
+// a diagnostic `printf` after the whole script and require it to produce
+// *no* output. If the guard's `exit` really fires, that `printf` line is
+// never reached at all (proved directly below by running the same
+// construct with the guard removed, where the appended line's output very
+// much does appear).
+#[test]
+fn sourcing_the_script_in_a_non_interactive_shell_is_a_silent_success() {
+    let out = Command::cargo_bin("ama")
+        .expect("bin")
+        .args(["init", "bash"])
+        .output()
+        .expect("run");
+    let script = String::from_utf8_lossy(&out.stdout).into_owned();
+    let mut c = Command::new("bash");
+    c.env_remove("AMA_SESSION");
+    c.arg("-c").arg(format!(
+        "{script}\nprintf 'UNREACHABLE AMA_SESSION=[%s]' \"$AMA_SESSION\""
+    ));
+    c.assert().success().stdout("").stderr("");
+}
