@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-use crate::adapter;
+use crate::adapter::{self, Tools};
 
 /// Where the prompt is handed to the agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,11 +34,32 @@ pub enum AgentConfig {
         command: Vec<String>,
         #[serde(default = "default_adapter")]
         adapter: bool,
+        /// REQ-32. Held as a string and parsed by `parse_tools` rather than
+        /// deserialised straight into `Tools`: `AgentConfig` is `untagged`,
+        /// and an untagged enum reports a failed variant as "data did not
+        /// match any variant", throwing away the one detail a user needs --
+        /// which value was wrong and what the alternatives are.
+        #[serde(default = "default_tools")]
+        tools: String,
     },
 }
 
 fn default_adapter() -> bool {
     true
+}
+
+fn default_tools() -> String {
+    "research".to_string()
+}
+
+fn parse_tools(s: &str) -> Result<Tools, ConfigError> {
+    match s.trim() {
+        "research" => Ok(Tools::Research),
+        "none" => Ok(Tools::None),
+        other => Err(ConfigError::UnknownTools {
+            value: other.to_string(),
+        }),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,6 +94,12 @@ pub enum ConfigError {
     },
     #[error("`agent:` is empty; it must name a command, e.g. `agent: claude`")]
     EmptyAgent,
+    #[error(
+        "`tools: {value}` is not a setting ama knows.\n\nUse `research` -- the \
+         default, which lets the agent search the web -- or `none` to grant \
+         nothing."
+    )]
+    UnknownTools { value: String },
 }
 
 /// `$AMA_CONFIG` when set, else `~/.ama/config.yml`.
@@ -126,6 +153,10 @@ impl Config {
             AgentConfig::Structured { command, .. } if command.is_empty() => {
                 Err(ConfigError::EmptyAgent)
             }
+            // Rejected at load, not at first use: a typo that only surfaced
+            // when the agent ran would look like the very defect `tools:`
+            // exists to fix.
+            AgentConfig::Structured { tools, .. } => parse_tools(tools).map(|_| ()),
             _ => Ok(()),
         }
     }
@@ -139,10 +170,17 @@ impl Config {
                 if argv.is_empty() {
                     return Err(ConfigError::EmptyAgent);
                 }
-                Ok(spec_from(adapter::normalize(&argv)))
+                Ok(spec_from(adapter::normalize(&argv, Tools::default())))
             }
-            AgentConfig::Structured { command, adapter } => Ok(spec_from(if *adapter {
-                adapter::normalize(command)
+            AgentConfig::Structured {
+                command,
+                adapter,
+                tools,
+            } => Ok(spec_from(if *adapter {
+                // `adapter: false` outranks `tools:` -- 0.1.0 promised it
+                // means "touch nothing at all", and a patch release does
+                // not narrow that.
+                adapter::normalize(command, parse_tools(tools)?)
             } else {
                 command.clone()
             })),

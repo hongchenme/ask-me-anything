@@ -527,8 +527,12 @@ fn write_starter_config(cfg: &std::path::Path) -> std::io::Result<()> {
         cfg,
         "# Your agent. Any CLI that reads a prompt on stdin and writes an\n\
          # answer to stdout works. ama inserts the one-shot flag for agents\n\
-         # it knows (claude, codex, agy, ollama); add `adapter: false` to\n\
-         # stop it touching your argv.\n\
+         # it knows (claude, codex, agy, ollama), plus a web-search grant --\n\
+         # without it a one-shot agent has nobody to approve the tool and\n\
+         # answers \"I don't have internet access\" instead of looking.\n\
+         #\n\
+         # `tools: none` drops the grant; `adapter: false` stops ama\n\
+         # touching your argv at all. `ama doctor` prints what will run.\n\
          agent:\n  command: [claude]\n\n\
          # Lines of terminal scrollback sent as context.\n\
          max_context_lines: 200\n",
