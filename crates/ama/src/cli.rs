@@ -193,6 +193,8 @@ fn init(shell: &str) -> ExitCode {
 fn doctor() -> ExitCode {
     let path = config::config_path();
     println!("config       {}", path.display());
+    println!("shell        {}", shell_name());
+    println!("integration  {}", integration_status());
     let key = session::current_key();
     println!("session      {key}");
     println!("context      {}", context::detect_source());
@@ -210,6 +212,39 @@ fn doctor() -> ExitCode {
             }
         }
         Err(e) => fail(EXIT_CONFIG, &e.to_string()),
+    }
+}
+
+/// R19/REQ-25: the honest source for "which shell would `install.sh` wire
+/// up" is `$SHELL`'s basename -- the same value `install.sh` itself reads
+/// to pick a rc file. Anything other than exactly `bash`/`zsh` is reported
+/// as `unknown` rather than guessed at, since `ama init` itself only knows
+/// those two (see `Cmd::Init`'s own rejection of anything else).
+fn shell_name() -> &'static str {
+    let raw = std::env::var("SHELL").unwrap_or_default();
+    match shellinit::Shell::parse(&raw) {
+        Some(shellinit::Shell::Bash) => "bash",
+        Some(shellinit::Shell::Zsh) => "zsh",
+        None => "unknown",
+    }
+}
+
+/// R19/REQ-25: `$AMA_SESSION` is exported only inside the interactive guard
+/// in `ama.bash`/`ama.zsh` (`if [[ $- == *i* ]]` / `if [[ -o interactive ]]`),
+/// so its presence in this process's environment is direct evidence the
+/// Enter hook actually ran in *this* shell -- not just that `ama init` was
+/// printed somewhere once. Its absence is not an error: REQ-27 requires
+/// `@@`/`ama ask` to work standalone from a script with no hook at all, so
+/// this is informational only, same as every other `doctor` line.
+fn integration_status() -> String {
+    if std::env::var("AMA_SESSION").is_ok_and(|v| !v.is_empty()) {
+        format!("loaded ({} hook active)", shell_name())
+    } else {
+        let (name, rc) = match shell_name() {
+            "zsh" => ("zsh", "~/.zshrc"),
+            _ => ("bash", "~/.bashrc"),
+        };
+        format!("not loaded -- add: eval \"$(ama init {name})\" to {rc}")
     }
 }
 

@@ -16,6 +16,27 @@ case "$shell_name" in
     *) rc="$HOME/.bashrc"; shell_name=bash ;;
 esac
 
+# R20: `ama init`'s own output never needs $dest on PATH -- it's eval'd
+# below by absolute path -- but the hook it installs does: ama.bash rewrites
+# READLINE_LINE (and ama.zsh, BUFFER) to a bare "${prefix}@@ ...", and both
+# call bare `ama session reset`. Without $dest on PATH, every `@@` after a
+# successful-looking install fails with "command not found". Fix it, don't
+# just warn; prepend it so it lands before the eval line below. Guarded the
+# same way as that eval line, so a second run does not duplicate it.
+case ":$PATH:" in
+    *":$dest:"*)
+        echo "$dest is already on PATH"
+        ;;
+    *)
+        if ! grep -qF "PATH=\"$dest:" "$rc" 2>/dev/null; then
+            printf '\n# ama -- put %s on PATH\nexport PATH="%s:$PATH"\n' "$dest" "$dest" >> "$rc"
+            echo "Added $dest to PATH in $rc"
+        else
+            echo "PATH entry for $dest already present in $rc"
+        fi
+        ;;
+esac
+
 line="eval \"\$($dest/ama init $shell_name)\""
 if ! grep -qF "ama init $shell_name" "$rc" 2>/dev/null; then
     printf '\n# ama -- ask me anything\n%s\n' "$line" >> "$rc"
@@ -31,5 +52,6 @@ if [[ ! -f "$HOME/.qmx2/config.yml" ]]; then
 fi
 
 echo
-echo "Installed. Start a new shell, then try:  @@ what is this project about"
+echo "Installed. Open a new shell, then try:  @@ what is this project about"
+echo "(\`ama doctor\` will confirm the integration is live.)"
 "$dest/ama" doctor || true

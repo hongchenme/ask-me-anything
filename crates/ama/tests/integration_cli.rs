@@ -363,8 +363,15 @@ fn doctor_reports_every_field_and_succeeds_when_healthy() {
     let (d, cfg) = env();
     let out = ama(&cfg, d.path()).arg("doctor").output().expect("run");
     let text = String::from_utf8_lossy(&out.stdout);
+    // REQ-25 names six fields: shell, integration state, context source,
+    // session key, resolved agent argv, and whether the agent is
+    // executable. `config` and `transcript` are extras beyond REQ-25 --
+    // kept because they're useful, not because the requirement asks for
+    // them.
     for field in [
         "config",
+        "shell",
+        "integration",
         "session",
         "context",
         "transcript",
@@ -377,6 +384,38 @@ fn doctor_reports_every_field_and_succeeds_when_healthy() {
         );
     }
     assert!(out.status.success());
+}
+
+/// R19: a script or a bare `ama ask` invocation with no shell hook loaded
+/// is not a failure (REQ-27 requires `@@`/`ama ask` to work standalone) --
+/// but `doctor` must still say so plainly rather than reporting the same
+/// `integration` text it would under a live hook. `$AMA_SESSION` is only
+/// ever exported from inside the interactive guard in `ama.bash`/`ama.zsh`,
+/// so a real, unhooked invocation has no other ambient source that would
+/// set it -- removing it here is what a script invocation looks like from
+/// `doctor`'s point of view, not a fabricated absence.
+#[test]
+fn doctor_reports_integration_not_loaded_without_ama_session() {
+    let (d, cfg) = env();
+    let out = ama(&cfg, d.path())
+        .env_remove("AMA_SESSION")
+        .arg("doctor")
+        .output()
+        .expect("run");
+    assert!(
+        out.status.success(),
+        "a missing shell hook must not be a doctor failure:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    let integration_line = text
+        .lines()
+        .find(|l| l.starts_with("integration"))
+        .expect("doctor must report an `integration` line");
+    assert!(
+        integration_line.contains("not loaded"),
+        "with no $AMA_SESSION, integration must be reported as not loaded, got: {integration_line}"
+    );
 }
 
 #[test]
@@ -396,8 +435,19 @@ fn doctor_names_the_context_source_it_would_use() {
     let (d, cfg) = env();
     let out = ama(&cfg, d.path()).arg("doctor").output().expect("run");
     let text = String::from_utf8_lossy(&out.stdout);
+    // R21: `doctor` also prints an unconditional `transcript <path>` field
+    // (REQ-25's separate "resolved... transcript" extra, not the context
+    // source) -- asserting the word "transcript" appears *anywhere* in
+    // stdout would hold even if `Source::Transcript`'s own `Display` text
+    // dropped the word entirely, since that field-label line alone
+    // supplies it. Pin the `context` line specifically, which is the one
+    // this test exists to cover.
+    let context_line = text
+        .lines()
+        .find(|l| l.starts_with("context"))
+        .expect("doctor must report a `context` line");
     assert!(
-        text.contains("transcript"),
-        "outside tmux the source must be named:\n{text}"
+        context_line.contains("transcript"),
+        "outside tmux the context line must name the transcript source, got: {context_line}"
     );
 }
