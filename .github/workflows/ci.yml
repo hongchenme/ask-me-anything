@@ -1,0 +1,78 @@
+name: ci
+
+# Every branch push, and every PR aimed at main. `check.sh` is the same
+# command a developer runs locally, so CI and the desk cannot drift.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+
+# A new push to the same ref makes the previous run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # tmux and zsh are not optional: the end-to-end suite drives a real
+      # `bash -i` and `zsh -i` inside tmux and asserts on `capture-pane`.
+      # That layer is the only one that can catch a defect in the Enter
+      # hook, so a runner without them would silently skip the tests that
+      # matter most. shellcheck has never run on a developer machine here
+      # — CI is its first real execution.
+      - name: Install tmux, zsh, shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tmux zsh shellcheck
+
+      # ama runs the user's own agent CLI, so a test that shells out to a
+      # real one would be slow, cost money, need credentials, and fail for
+      # everybody else. No test does: the suite runs entirely on the fake
+      # agents in crates/ama/tests/fixtures/, and every mention of claude,
+      # codex, agy or ollama in a test is a *string* handed to
+      # adapter::normalize, a pure function that spawns nothing.
+      #
+      # This step keeps that true rather than assuming it. A hosted runner
+      # has none of these installed, so the whole suite below is executed
+      # with zero agents on PATH — if someone later writes a test that
+      # needs one, it fails here instead of passing only on the machine
+      # that happens to have it.
+      - name: Assert no agent CLI is available
+        run: |
+          set -euo pipefail
+          found=""
+          for agent in claude codex agy ollama; do
+            if command -v "$agent" >/dev/null 2>&1; then
+              found="$found $agent ($(command -v "$agent"))"
+            fi
+          done
+          if [ -n "$found" ]; then
+            echo "::error::An agent CLI is on PATH in CI:$found"
+            echo "The suite must pass with no real agent installed. Either remove it"
+            echo "from the runner image, or rewrite the test to use a fixture in"
+            echo "crates/ama/tests/fixtures/."
+            exit 1
+          fi
+          echo "No agent CLI on PATH — the suite runs against fixtures only."
+
+      # fmt, clippy (lib+bins with unwrap/expect denied, and tests),
+      # bash -n, zsh -n, shellcheck, build, and the full test suite
+      # single-threaded. Exactly what ./check.sh runs locally.
+      - name: ./check.sh
+        run: ./check.sh

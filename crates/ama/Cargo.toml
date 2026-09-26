@@ -1,0 +1,41 @@
+[package]
+name = "ama"
+# Explicit rather than inherited: cargo-dist keys releases off this, and a
+# reader of this manifest should not have to open another file to learn
+# what version they are building.
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+description = "Ask your own agent from the shell. Type @@ and your question."
+repository = "https://github.com/hongchenme/ask-me-anything"
+homepage = "https://github.com/hongchenme/ask-me-anything"
+license = "Apache-2.0"
+readme = "../../README.md"
+keywords = ["cli", "llm", "agent", "shell", "terminal"]
+categories = ["command-line-utilities"]
+
+# The workspace sets `publish = false` (ama ships as a binary, not a crate),
+# which otherwise hides it from cargo-dist entirely.
+[package.metadata.dist]
+dist = true
+
+[lib]
+name = "ama"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ama"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
+proptest.workspace = true
+tempfile.workspace = true
