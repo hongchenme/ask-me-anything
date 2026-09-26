@@ -87,7 +87,7 @@ fn output_is_streamed_not_buffered_until_exit() {
     // until exit, nothing would be readable before the sleep completes.
     let (tx, rx) = std::sync::mpsc::channel::<std::time::Duration>();
     let started = Instant::now();
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         struct Probe(std::sync::mpsc::Sender<std::time::Duration>, Instant, bool);
         impl std::io::Write for Probe {
             fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
@@ -110,5 +110,72 @@ fn output_is_streamed_not_buffered_until_exit() {
     assert!(
         first < std::time::Duration::from_secs(2),
         "first byte took {first:?}"
+    );
+    // Join rather than leave this loose: agent::run inside the thread does
+    // not return until fake-agent-slow's full ~3s lifetime is over (it
+    // waits for the child same as always), so without this join both the
+    // thread and the still-sleeping agent would outlive the test's own
+    // pass/fail. Joining is what makes this test's ~3s wall time a
+    // deliberate wait for a clean finish rather than an orphaned leak.
+    handle.join().expect("probe thread must not panic");
+}
+
+#[test]
+fn a_broken_output_stream_kills_the_agent_instead_of_leaking_it() {
+    // Simulates ama's own stdout breaking mid-stream (e.g. the user piped
+    // `ama` into something that exited early). The agent here prints once
+    // (tripping the broken-pipe failure inside Robot on the very first
+    // write), sleeps, and -- only if left running to completion -- touches
+    // a marker file afterwards.
+    //
+    // A bare timing assertion is not enough to pin this: the original bug
+    // (no cleanup at all on this path) *also* returns promptly, because it
+    // skips `wait()` entirely rather than blocking on it. What actually
+    // distinguishes "killed and reaped" from "abandoned to run loose" is
+    // whether the agent ever reaches the `touch` -- so this test waits
+    // past the agent's internal sleep and checks the marker never appears.
+    struct BrokenPipe;
+    impl std::io::Write for BrokenPipe {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "simulated: ama's own stdout is gone",
+            ))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let marker = dir.path().join("reached-the-end");
+    let script = format!(
+        "cat >/dev/null; echo first; sleep 1.5; touch '{}'",
+        marker.display()
+    );
+    let s = AgentSpec {
+        argv: vec!["bash".into(), "-c".into(), script],
+        prompt_via: PromptVia::Stdin,
+    };
+
+    let started = std::time::Instant::now();
+    let err = agent::run(&s, "x", &mut BrokenPipe).unwrap_err();
+    let elapsed = started.elapsed();
+
+    assert!(
+        matches!(err, agent::AgentError::Io { .. }),
+        "expected AgentError::Io, got: {err}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(1),
+        "run should fail promptly by killing the agent, not wait out its sleep: {elapsed:?}"
+    );
+
+    // Give a left-running agent ample time (1s margin) to reach the
+    // `touch` on its own before checking it never got there.
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    assert!(
+        !marker.exists(),
+        "agent kept running after `run` returned instead of being killed and reaped"
     );
 }

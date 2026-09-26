@@ -66,40 +66,69 @@ pub fn run(spec: &AgentSpec, input: &str, out: &mut dyn Write) -> Result<i32, Ag
         })
     });
 
+    // Stream stdout through Robot. The result is captured rather than
+    // returned immediately: the child and the stdin-writer thread must be
+    // cleaned up below on *every* exit from this section, not just the
+    // happy one -- otherwise a broken `out` (e.g. our own stdout pipe
+    // closing because the user piped `ama` into something that exited
+    // early) would abandon a still-running agent instead of reaping it.
     let mut robot = Robot::new(out);
-    if let Some(mut stdout) = child.stdout.take() {
-        let mut buf = [0u8; 8192];
-        loop {
-            match stdout.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => robot
-                    .write_all(&buf[..n])
-                    .map_err(|source| AgentError::Io {
-                        program: program.clone(),
-                        source,
-                    })?,
-                Err(source) => {
-                    return Err(AgentError::Io {
-                        program: program.clone(),
-                        source,
-                    });
+    let stream_result: Result<(), AgentError> = (|| {
+        if let Some(mut stdout) = child.stdout.take() {
+            let mut buf = [0u8; 8192];
+            loop {
+                match stdout.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => robot
+                        .write_all(&buf[..n])
+                        .map_err(|source| AgentError::Io {
+                            program: program.clone(),
+                            source,
+                        })?,
+                    Err(source) => {
+                        return Err(AgentError::Io {
+                            program: program.clone(),
+                            source,
+                        });
+                    }
                 }
             }
         }
-    }
-    robot.finish().map_err(|source| AgentError::Io {
-        program: program.clone(),
-        source,
-    })?;
+        robot.finish().map_err(|source| AgentError::Io {
+            program: program.clone(),
+            source,
+        })
+    })();
     let produced = robot.wrote_anything();
+
+    // On failure the agent may still be alive: blocked writing to a stdout
+    // pipe nobody drains any more, or blocked reading stdin because it
+    // cannot make progress until that write unblocks. Kill it first so
+    // neither the writer thread's join nor `wait()` below can hang on a
+    // process that would otherwise never exit on its own.
+    if stream_result.is_err() {
+        let _ = child.kill();
+    }
 
     if let Some(h) = writer {
         let _ = h.join();
     }
-    let status = child.wait().map_err(|source| AgentError::Io {
-        program: program.clone(),
-        source,
-    })?;
+    let wait_result = child.wait();
+
+    // The streaming failure is the more useful diagnostic (e.g. our own
+    // stdout broke) than any secondary error from wait() on a process we
+    // just killed, but wait() is still called unconditionally above so the
+    // child is always reaped rather than leaked as a zombie or orphan.
+    let status = match stream_result {
+        Err(e) => {
+            let _ = wait_result;
+            return Err(e);
+        }
+        Ok(()) => wait_result.map_err(|source| AgentError::Io {
+            program: program.clone(),
+            source,
+        })?,
+    };
 
     // Review Focus 5: a silent, successful agent is reported, not mistaken
     // for a good answer.
