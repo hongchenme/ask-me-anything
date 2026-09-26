@@ -42,6 +42,7 @@ maps requirement groups to the test layers defined in
 | REQ-04 | The typed question remains visible on screen and in shell history after the turn. | tmux e2e: pane contains the question above the answer; `history` shows the entry. |
 | REQ-05 | Ctrl-C during a turn interrupts the agent and returns a usable prompt. | tmux e2e: interrupt a slow fake agent; shell survives and the next command runs. |
 | REQ-06 | An empty prompt (`@@ ` alone) is a no-op, not an agent call. | tmux e2e: no agent process spawned, no error. |
+| REQ-28 | The trigger is recognised at the start of the line (ignoring leading whitespace) **and** at a command position after `;`, `&&`, `\|\|`, or `\|`. The preceding commands run first, unmodified. | tmux e2e: `clear && @@ joke` clears the screen, then answers with no prior context. Unit: split fixtures for line-start, leading whitespace, `&&`, `;`, and a prompt that merely *contains* `\|` or `&&`. |
 
 ### Answering
 
@@ -100,7 +101,7 @@ maps requirement groups to the test layers defined in
 
 | Requirement group | Design section | Covered by |
 |---|---|---|
-| REQ-01 … REQ-06 | ADR-001, `shellinit` | TEST-E2E-*, TEST-P01 |
+| REQ-01 … REQ-06, REQ-28 | ADR-001, ADR-006, `shellinit`, `escape` | TEST-E2E-*, TEST-P01 |
 | REQ-07 … REQ-10 | `agent`, `render` | TEST-INT-* |
 | REQ-11 … REQ-15 | ADR-002, `context`, `session` | TEST-E2E-*, TEST-INT-* |
 | REQ-16 … REQ-21 | ADR-003, `config` | TEST-UNIT-* |
@@ -109,4 +110,11 @@ maps requirement groups to the test layers defined in
 
 ## SG2 — Specification accepted
 
-Pending owner review of this cycle's S0–S2 artifacts.
+Accepted 2026-09-26 by solo-founder.
+
+**Amendment A-01, 2026-09-26 (during S3).** REQ-28 added. Planning against README
+example 3 (`clear && @@ show me the joke of the day`) showed the trigger is not always
+at the start of the line, which every capture requirement had assumed. Recorded under
+SDLC §14 as a plan-time return to S2. Scope impact: one extra branch in the shell hook
+and a unit-tested split function (ADR-006 in [04-design.md](04-design.md)); no change
+to architecture, risk tier, or any other requirement.

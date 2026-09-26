@@ -19,10 +19,10 @@ terminal, to the user's own agent CLI and streams the answer back inline.
 
 | | |
 |---|---|
-| **Stage** | S2 — specify requirements and design |
-| **Gate** | SG2, awaiting owner review of the artifacts below |
+| **Stage** | S3 — plan and partition |
+| **Gate** | SG3, awaiting owner approval of the implementation plan |
 | **Risk tier** | R1 (see [risk register](02-discovery-and-risk.md#4-risk-register)) |
-| **Next action** | Owner reviews S0–S2; on acceptance, S3 produces `05-implementation-plan.md` |
+| **Next action** | Owner approves the plan and selects an execution method; then S4 build |
 | **Blockers** | None |
 
 ## Artifact map
@@ -31,9 +31,9 @@ terminal, to the user's own agent CLI and streams the answer back inline.
 |---|---|---|
 | S0 | [01-intent.md](01-intent.md) | accepted |
 | S1 | [02-discovery-and-risk.md](02-discovery-and-risk.md) | accepted |
-| S2 | [03-product-requirements.md](03-product-requirements.md) | in review |
-| S2 | [04-design.md](04-design.md) | in review |
-| S3 | `05-implementation-plan.md` | not started |
+| S2 | [03-product-requirements.md](03-product-requirements.md) | accepted (amended A-01) |
+| S2 | [04-design.md](04-design.md) | accepted (amended A-02) |
+| S3 | [05-implementation-plan.md](05-implementation-plan.md) | in review |
 | S4 | `06-build-record.md` | not started |
 | S5 | `07-verification.md` | not started |
 | S6 | `08-release.md` | not started |
@@ -45,7 +45,18 @@ terminal, to the user's own agent CLI and streams the answer back inline.
 |---|---|---|---|
 | SG0 — Intent accepted | 2026-09-26 | Accepted | Problem worth discovery |
 | SG1 — Discovery accepted | 2026-09-26 | Accepted | R1 tier and RISK-01 acceptance approved |
-| SG2 — Specification accepted | — | Pending | Awaiting owner review |
+| SG2 — Specification accepted | 2026-09-26 | Accepted | Amended twice during S3, below |
+| SG3 — Plan approved | — | Pending | Awaiting owner review of the plan |
+
+## Amendments
+
+Recorded under SDLC §14. Both were found while planning against the real spec and are
+returns to S2, not silent scope changes.
+
+| ID | Date | Change | Impact |
+|---|---|---|---|
+| A-01 | 2026-09-26 | **REQ-28 added.** README example 3 is `clear && @@ show me the joke of the day`, so the trigger is not always at the start of the line — an assumption every capture requirement had made. ADR-006 defines the recognition order. | One extra branch in the shell hook and a unit-tested split function. No architecture, tier, or other requirement affected. |
+| A-02 | 2026-09-26 | **Rust `escape` module removed.** Nothing in Rust ever escapes: `@@` receives arguments the shell already parsed. Splitting and quoting must happen in the hook, since routing every Enter press through a subprocess would violate NFR-01. Both now live in the shell scripts, property-tested from Rust by driving the real shell. | Strictly better evidence — the oracle is now the shell that actually runs the code, not a Rust reimplementation of it. |
 
 ## Decisions carried into this cycle
 

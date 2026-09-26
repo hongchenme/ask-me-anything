@@ -96,6 +96,37 @@ reaching any handler, whereas `@` carries no special meaning to bash or zsh. The
 existing `~/.qmx2/` configuration directory is retained; renaming it would break the
 README for no benefit.
 
+### ADR-006 — The trigger is recognised at any command position, and only the tail is rewritten
+
+**Status:** Accepted · **Drivers:** REQ-28 · **Added by:** Amendment A-01 during S3
+
+README example 3 is `clear && @@ show me the joke of the day`. The trigger is therefore
+not always the first thing on the line, and the commands before it must still run as
+ordinary shell commands. The hook splits the buffer into a **prefix** and a **prompt**
+and rewrites only the tail:
+
+```
+clear && @@ show me the joke of the day
+└─ prefix ─┘   └──────── prompt ───────┘
+            ↓
+clear && @@ 'show me the joke of the day'
+```
+
+Recognition order is deterministic, because the alternatives are ambiguous for a prompt
+that itself contains `&&`:
+
+1. Buffer begins with the trigger, ignoring leading whitespace → prefix is empty.
+2. Otherwise the **last** `;`, `&&`, `||`, or `|` followed by whitespace and the
+   trigger → everything up to and including that operator is the prefix.
+3. Otherwise not a trigger line; chain to the previous binding.
+
+Checking line-start first means `@@ compare a && @@ b` is one prompt, not a prefix and
+a prompt. A prompt that merely contains an operator (`@@ list *.rs | grep foo`) matches
+neither rule 2's trailing-trigger requirement nor anything else, and falls to rule 1.
+
+**Consequence:** `clear && @@ …` needs no special handling for context reset on the
+tmux path — `clear` runs first, so the pane is already empty when `@@` scrapes it.
+
 ## 2. Architecture
 
 ```
@@ -136,11 +167,18 @@ Each module has one purpose, a narrow interface, and is testable without the oth
 | `prompt` | Compose context + question into the agent's input | — | `fn compose(ctx, q) -> String` (pure) |
 | `agent` | Spawn, write stdin, stream stdout, propagate signals and exit status | `adapter` | `fn run(&AgentSpec, input, out) -> Result<Status>` |
 | `render` | `🤖: ` prefixing over a streaming writer | — | `impl Write` |
-| `shellinit` | Emit the bash and zsh integration scripts | — | `fn script(Shell) -> &'static str` |
-| `escape` | Single-quote escaping (the RISK-02 boundary) | — | `fn sq(s: &str) -> String` (pure) |
+| `shellinit` | Emit the bash and zsh integration scripts; owns `src/shell/*.{bash,zsh}` | — | `fn script(Shell) -> &'static str` |
 
-`adapter`, `prompt`, and `escape` are pure functions, which is where the
-correctness-critical logic deliberately lives.
+`adapter` and `prompt` are pure functions, which is where the correctness-critical
+Rust logic deliberately lives.
+
+**Amendment A-02, 2026-09-26 (during S3).** An `escape` module in Rust was specified
+and is now removed: nothing in Rust ever escapes. The `@@` process receives arguments
+the shell has already parsed, so trigger splitting (ADR-006) and single-quote escaping
+must happen inside the shell hook — routing every Enter press through a subprocess to
+ask Rust would violate NFR-01. Both therefore live in `src/shell/ama.bash` and
+`ama.zsh` as shell functions, and are property-tested from Rust by driving the real
+shell (see §4). No change to requirements, risk tier, or any other module.
 
 ## 3. Data flow for one turn
 
@@ -163,7 +201,7 @@ correctness-critical logic deliberately lives.
 
 ## 4. The escape boundary
 
-This is the one place where a bug is more than an inconvenience: `escape::sq` produces
+This is the one place where a bug is more than an inconvenience: `__ama_sq` produces
 text that the user's shell will execute.
 
 Single-quote escaping is chosen because it is *total*. Inside `'…'` bash and zsh treat
@@ -174,9 +212,13 @@ the quote, and it is handled by closing, emitting `\'`, and reopening:
 sq(s) = "'" + s.replace("'", "'\\''") + "'"
 ```
 
-There is no character class to enumerate and therefore no class to get wrong. It is
-verified by a property test over arbitrary byte strings (TEST-P01) that asserts the
-shell's own parse of `sq(s)` returns `s` unchanged.
+There is no character class to enumerate and therefore no class to get wrong.
+
+TEST-P01 verifies it the only way that proves anything: a Rust property test generates
+arbitrary strings, sources the real `ama.bash` under `bash -c`, applies `__ama_sq`,
+lets **bash itself** parse the result, and asserts the recovered string is byte-identical
+to the input. The oracle is the shell that will actually run the code, not a Rust
+reimplementation of what it is believed to do. The same harness runs against `zsh`.
 
 Rejected alternative: escaping only "dangerous" characters, to keep the rendered line
 tidier. That requires an allow-list of safe characters, which is exactly the enumerable
@@ -224,9 +266,12 @@ Cargo.toml                 # workspace; edition 2024, deps pinned as in learn/
 crates/ama/
   src/main.rs              # #![forbid(unsafe_code)]; thin, calls cli::run
   src/cli.rs  config.rs  adapter.rs  session.rs  context.rs
-      prompt.rs  agent.rs  render.rs  shellinit.rs  escape.rs
-  src/shell/ama.bash  ama.zsh        # embedded via include_str!
+      prompt.rs  agent.rs  render.rs  shellinit.rs
+  src/shell/ama.bash  ama.zsh        # __ama_sq + __ama_split live here
+                                     # (A-02); embedded via include_str!
   tests/unit_*.rs                    # pure-function and config tests
+  tests/shell_functions.rs           # TEST-P01: property-tests the shell
+                                     # functions by driving real bash/zsh
   tests/integration_*.rs             # assert_cmd + fake agent scripts
   tests/e2e_shell.rs                 # tmux-driven; skipped if tmux absent
   tests/fixtures/fake-agent*         # echo / slow / failing / cwd-printing
