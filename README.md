@@ -49,6 +49,22 @@ user@host:~/project-x$ clear && @@ show me the joke of the day
 It is conversational: each `@@` sees the ones before it. `clear` starts fresh,
 because the conversation *is* what is on your screen.
 
+Agents take a few seconds to answer. Until the answer starts, the line it will
+appear on shows a moon cycling through its phases, so you can tell thinking
+from stuck:
+
+```
+user@host:~/project-x$ @@ whats weather?
+🤖 🌔
+```
+
+When the answer starts it takes over that line. The moon is never sent to your
+agent as context, not even when a frame stays on screen, which happens if you
+press Enter, or interrupt `ama`, while the moon is showing.
+
+It only shows on a terminal. `ama ask -- … | less` and `$(ama ask -- …)` get
+exactly the answer. (Typed after `@@`, a `| less` is part of the question.)
+
 Your question is passed through byte-for-byte — no globbing, no variable
 expansion, no quote handling. The integration rewrites the line into a correctly
 quoted command first, so `@@ what's this?` runs as `@@ 'what'\''s this?'`.
@@ -124,6 +140,19 @@ agent:
 
 `agy` has no system-prompt flag.
 
+### The moon
+
+To turn off the moon shown while the agent thinks:
+
+```yaml
+spinner: false
+```
+
+While the moon is showing, anything your agent prints to stderr is passed
+through `ama`, so a progress line never lands on the moon's line — each keeps
+its own line, and the moon carries on below it. `spinner: false` undoes that
+as well: the agent writes to your terminal directly, exactly as before.
+
 ## What it sends
 
 Inside tmux or screen, `ama` sends what is on the visible pane — including other
@@ -151,7 +180,8 @@ agent.** Clear the screen first, or ask without context:
 ./check.sh   # fmt, clippy, shell syntax, and all tests
 ```
 
-The design record lives in [`0.1.0/`](0.1.0/) — intent, risks, requirements,
-decisions, and verification.
+The design record lives in one directory per version —
+[`0.1.0/`](0.1.0/), [`0.1.1/`](0.1.1/), [`0.1.2/`](0.1.2/) — intent, risks,
+requirements, decisions, and verification.
 
 Apache-2.0.
