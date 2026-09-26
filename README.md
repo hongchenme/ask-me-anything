@@ -64,15 +64,38 @@ agent:
 max_context_lines: 200
 ```
 
-`command` is a plain argv list. `ama` inserts the one-shot token an agent needs,
-so you do not have to remember it:
+`command` is a plain argv list. `ama` inserts what an agent needs to run
+one-shot *and* to answer questions about the world, so you do not have to
+remember either:
 
 | You write | It runs | Why |
 |---|---|---|
-| `[claude]` | `claude -p` | `-p` prints and exits |
-| `[codex]` | `codex exec` | one-shot is a *subcommand*; `codex exec -p` means `--profile` |
+| `[claude]` | `claude -p --allowedTools WebSearch` | `-p` prints and exits; the grant is explained below |
+| `[codex]` | `codex --search exec` | one-shot is a *subcommand*; `codex exec -p` means `--profile`, and `--search` is rejected after `exec` |
 | `[ollama, llama3]` | `ollama run llama3` | |
 | `[agy]` | `agy -p {prompt}` | agy's `-p` takes the prompt as its value and does not read stdin |
+
+`ama doctor` prints the argv that will actually run.
+
+### Web search
+
+A one-shot agent has nobody to answer a permission prompt, so anything needing
+approval is denied — and it will tell you it has no internet access rather than
+that it was not allowed to look. `ama` therefore grants web search, and only
+web search:
+
+```yaml
+agent:
+  command: [claude]
+  tools: research   # the default — let the agent search the web
+  # tools: none     # grant nothing
+```
+
+Page fetching is deliberately *not* granted. Your terminal screen is part of
+every prompt, so anything on it can influence the agent; a search goes to a
+search engine, while fetching a URL chosen by text on your screen is a way for
+that text to send data somewhere. Reading files is unaffected either way —
+agents already allow that without asking.
 
 Anything else runs exactly as written. Add `adapter: false` to stop `ama`
 touching your argv at all:
