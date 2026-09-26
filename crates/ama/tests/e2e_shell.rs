@@ -681,6 +681,106 @@ fn an_existing_c_m_binding_is_chained_not_clobbered() {
     );
 }
 
+// ---- REQ-33: Return is not always `\C-m` (0.1.1) ---------------------------
+//
+// 0.1.0 bound only `\C-m`, because `\C-j` was the terminator its Enter macro
+// ended with. A terminal that sends LF for Return -- iTerm2 can be set up
+// that way, macOS Terminal is not -- therefore bypassed the hook entirely:
+// the raw line reached bash, the apostrophe in `what's` opened a quote that
+// never closed, and the shell sat at PS2 with no output and no error. That
+// is defect 2 of this cycle, and the reporter's `~/.bash_history` shows it
+// directly: every `@@` line the hook processed is stored rewritten, and the
+// failing one is stored raw.
+//
+// Every other test in this file submits with `Enter`, which tmux sends as
+// CR. That is why the whole 0.1.0 suite was green on a defect that made the
+// product unusable on one of two common terminals, and it is why these
+// tests send the key explicitly.
+
+#[test]
+fn a_question_submitted_with_line_feed_reaches_the_agent() {
+    require_tmux!();
+    let p = Pane::start("ama-e2e-lf", "bash");
+    // The reporter's line, verbatim -- apostrophe and all, which is what
+    // turned a skipped hook into a stuck shell rather than a wrong answer.
+    p.send_raw("@@ what's the files listed under this dir");
+    std::thread::sleep(Duration::from_millis(300));
+    p.send_raw("C-j");
+    let pane = p.wait_for("🤖:", Duration::from_secs(10));
+    assert!(
+        pane.contains("@@ 'what'\\''s the files listed under this dir'"),
+        "LF must reach the hook and be rewritten, not land at PS2\n{pane}"
+    );
+}
+
+/// REQ-03 on the new key: an untriggered line must behave exactly as it
+/// would in an uninstrumented shell. Binding a second key to Enter is the
+/// most invasive thing this cycle does, so it is checked on both.
+#[test]
+fn an_ordinary_command_submitted_with_line_feed_is_unaffected() {
+    require_tmux!();
+    let p = Pane::start("ama-e2e-lf-plain", "bash");
+    p.send_raw("echo LF-NORMAL-OK");
+    std::thread::sleep(Duration::from_millis(300));
+    p.send_raw("C-j");
+    let pane = p.wait_for("LF-NORMAL-OK", Duration::from_secs(5));
+    assert!(!pane.contains("🤖:"), "no agent should have run\n{pane}");
+}
+
+/// RISK-03 on the new key: `\C-j` gets the same chaining treatment `\C-m`
+/// has, so a tool that already owns it keeps working.
+#[test]
+fn an_existing_c_j_binding_is_chained_not_clobbered() {
+    require_tmux!();
+    let probe = "bind '\"\\C-j\": \"echo CJ-PROBE-RAN\\C-m\"'\n";
+    let p = Pane::start_with_extra_rc("ama-e2e-chain-cj", "bash", probe);
+    p.send_raw("C-j");
+    let pane = p.wait_for("CJ-PROBE-RAN", Duration::from_secs(5));
+    assert!(
+        pane.contains("CJ-PROBE-RAN"),
+        "a pre-existing \\C-j binding must be chained, not clobbered\n{pane}"
+    );
+}
+
+/// RISK-09 / F-11 / NFR-09 -- the hazard the REQ-33 fix introduces, pinned
+/// before it can escape.
+///
+/// Once `\C-j` expands to a macro of ours, a third-party `\C-m` macro that
+/// *ends* in `\C-j` -- the ordinary way to write one, and what this file's
+/// own `an_existing_c_m_binding_is_chained_not_clobbered` plants -- makes
+/// one keypress run `__ama_hook` twice. The second pass would re-quote the
+/// buffer the first pass already quoted:
+///
+/// ```text
+/// @@ what's it  ->  @@ 'what'\''s it'  ->  @@ ''\''what'\''\'\'''\''s it'\'''
+/// ```
+///
+/// which reaches the agent as a question full of quote marks. The guard in
+/// `__ama_hook` compares the buffer against the last one it wrote and
+/// returns if they match. Verified by mutation: with the guard deleted, this
+/// test fails and the corrupt form below is what appears on the pane.
+#[test]
+fn a_third_party_enter_macro_does_not_double_quote_a_triggered_line() {
+    require_tmux!();
+    // A no-op wrapper around Enter: the whole macro body is the key that
+    // accepts the line. Harmless on its own, and the minimal shape that
+    // routes `\C-m` through `\C-j`.
+    let probe = "bind '\"\\C-m\": \"\\C-j\"'\n";
+    let p = Pane::start_with_extra_rc("ama-e2e-double", "bash", probe);
+    p.send_raw("@@ what's it");
+    std::thread::sleep(Duration::from_millis(300));
+    p.send_raw("Enter");
+    let pane = p.wait_for("🤖:", Duration::from_secs(10));
+    assert!(
+        pane.contains("@@ 'what'\\''s it'"),
+        "the line must be quoted exactly once\n{pane}"
+    );
+    assert!(
+        !pane.contains("''\\''what"),
+        "the hook ran twice and re-quoted its own output\n{pane}"
+    );
+}
+
 /// Ctrl-L must clear the screen *and* the scrollback, and must not throw
 /// away whatever the user was part-way through typing.
 ///
@@ -734,6 +834,35 @@ fn the_readme_first_example_works_in_zsh_too() {
     p.send("@@ what's this project all about?");
     let pane = p.wait_for("🤖:", Duration::from_secs(10));
     assert!(pane.contains("what's this project all about?"), "{pane}");
+}
+
+/// F-10: zsh never had defect 2, for a structural reason worth a test.
+///
+/// `ama.zsh` replaces the `accept-line` *widget*, and zsh binds both `^M`
+/// and `^J` to that widget by name -- so one replacement covers both keys.
+/// bash binds key *sequences* to functions and macros, so each sequence has
+/// to be handled on its own, which is why REQ-33's fix is bash-only.
+///
+/// This test passes before and after that fix. It exists so that a later
+/// reader who sees `\C-m`/`\C-j` handled explicitly in `ama.bash` and
+/// "ports the fix" to `ama.zsh` -- rebinding keys instead of the widget --
+/// gets a failure instead of a silent regression.
+#[test]
+fn a_question_submitted_with_line_feed_works_in_zsh_too() {
+    require_tmux!();
+    if !have("zsh") {
+        eprintln!("skipping: zsh not installed");
+        return;
+    }
+    let p = Pane::start("ama-e2e-zsh-lf", "zsh");
+    p.send_raw("@@ what's the files listed under this dir");
+    std::thread::sleep(Duration::from_millis(300));
+    p.send_raw("C-j");
+    let pane = p.wait_for("🤖:", Duration::from_secs(10));
+    assert!(
+        pane.contains("what's the files listed under this dir"),
+        "zsh must handle LF through the accept-line widget\n{pane}"
+    );
 }
 
 /// zsh's own `clear-screen` widget (bound to Ctrl-L by default) already

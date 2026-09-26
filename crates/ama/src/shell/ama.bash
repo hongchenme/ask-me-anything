@@ -79,6 +79,21 @@ __ama_clears_screen() {
 
 __ama_hook() {
     local split prefix prompt
+    # NFR-09 / RISK-09. One keypress can reach this twice: now that `\C-j`
+    # expands to a macro of ours, a third-party `\C-m` macro ending in
+    # `\C-j` -- the ordinary way to write one -- routes through the hook and
+    # then through it again. A second pass over an already-rewritten line
+    # quotes the quoting, and `@@ what's it` reaches the agent as
+    # `@@ ''\''what'\''\'\'''\''s it'\'''` (observed, not predicted).
+    #
+    # So a buffer identical to the one this function last produced is left
+    # alone. Equality against our own output, never a guess at what
+    # "already quoted" looks like, so it cannot misfire on a line the hook
+    # did not write. The `+x` test matters: it keeps an unset variable from
+    # matching an empty buffer and skipping the `clear` handling below.
+    if [[ -n ${__ama_rewrote+x} && $READLINE_LINE == "$__ama_rewrote" ]]; then
+        return 0
+    fi
     if split=$(__ama_split "$READLINE_LINE"); then
         prefix=${split%%$'\x1f'*}
         prompt=${split#*$'\x1f'}
@@ -92,6 +107,7 @@ __ama_hook() {
         # path resets itself but the fallback path has no other signal.
         __ama_clears_screen "$prefix" && ama session reset >/dev/null 2>&1
         READLINE_LINE="${prefix}@@ $(__ama_sq "$prompt")"
+        __ama_rewrote=$READLINE_LINE
         READLINE_POINT=${#READLINE_LINE}
         return 0
     fi
@@ -118,22 +134,56 @@ __ama_clear_screen_widget() {
     printf '\033[H\033[2J\033[3J'
 }
 
+# Print the macro currently bound to key sequence $1 (written the way
+# `bind -s` writes it, e.g. `\C-m`), or nothing when that key is unbound or
+# bound to a readline *function* -- `bind -s` lists only macros. Done with
+# bash pattern matching rather than the `sed` this used to use: the key name
+# is now a parameter, and passing `\C-m` through a sed script needs it
+# double-escaped to survive BRE, which is one silent-mismatch trap too many
+# for a function whose failure mode is "quietly stop chaining".
+__ama_bound_macro() {
+    local line head="\"$1\": \""
+    while IFS= read -r line; do
+        if [[ $line == "$head"*'"' ]]; then
+            line=${line#"$head"}
+            printf '%s' "${line%\"}"
+            return 0
+        fi
+    done < <(bind -s 2>/dev/null)
+    return 1
+}
+
 # Chain to whatever already owns Enter (RISK-03) instead of clobbering it.
+#
+# REQ-33: both keys that mean "accept this line" are hooked, not just
+# `\C-m`. Return is CR on most terminals but LF on some -- iTerm2 can be
+# configured either way, macOS Terminal sends CR -- and 0.1.0 bound only
+# `\C-m`, so on an LF terminal the raw line went straight to bash and an
+# apostrophe left the shell stuck at PS2 with no output at all.
+#
+# `\C-j` could not simply be added in 0.1.0 because it *was* the Enter
+# macro's terminator: a macro ending in the key that expands it recurses.
+# `\C-x\C-am` replaces it -- a private sequence bound to the accept-line
+# function, which no terminal sends for Return, so remapping `\C-m` or
+# `\C-j` cannot reach it and the macro always terminates.
 __ama_install() {
-    local existing
-    existing=$(bind -s 2>/dev/null | sed -n 's/^"\\C-m": "\(.*\)"$/\1/p' | head -n1)
+    bind '"\C-x\C-am": accept-line' 2>/dev/null
     bind -x '"\C-x\C-aq": __ama_hook' 2>/dev/null || return 0
-    if [[ -z $existing ]]; then
-        # \C-j is also accept-line and is left unbound, so the macro terminates.
-        bind '"\C-m": "\C-x\C-aq\C-j"' 2>/dev/null
-    elif [[ $existing != *'\C-x\C-aq'* ]]; then
-        bind "\"\\C-m\": \"\\C-x\\C-aq${existing}\"" 2>/dev/null
-    fi
-    # else (R18, finding 3): \C-m is already chained -- e.g. a second
-    # `eval "$(ama init bash)"` in the same shell -- so leave it alone.
-    # Falling into the old unconditional `else` here overwrote an
-    # already-correct chain with a bare `\C-x\C-aq\C-j`, dropping whatever
-    # third-party payload `\C-m` had been chained to.
+
+    local seq existing
+    for seq in '\C-m' '\C-j'; do
+        existing=$(__ama_bound_macro "$seq")
+        if [[ -z $existing ]]; then
+            bind "\"$seq\": \"\\C-x\\C-aq\\C-x\\C-am\"" 2>/dev/null
+        elif [[ $existing != *'\C-x\C-aq'* ]]; then
+            bind "\"$seq\": \"\\C-x\\C-aq${existing}\"" 2>/dev/null
+        fi
+        # else (R18, finding 3): already chained -- e.g. a second
+        # `eval "$(ama init bash)"` in the same shell -- so leave it alone.
+        # Falling into the fresh-install branch here overwrote an
+        # already-correct chain, dropping whatever third-party payload the
+        # key had been chained to.
+    done
     bind -x '"\C-l": __ama_clear_screen_widget' 2>/dev/null
 }
 
