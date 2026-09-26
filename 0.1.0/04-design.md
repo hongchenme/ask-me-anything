@@ -199,12 +199,17 @@ shell (see §4). No change to requirements, risk tier, or any other module.
 
 ## 3. Data flow for one turn
 
-1. **Dispatch.** `argv[0] == "@@"` → prompt is `argv[1..]`. Empty prompt exits 0 (REQ-06).
+1. **Dispatch.** `argv[0] == "@@"` → prompt is `argv[1..]`, joined. A leading
+   `--no-context` token is peeled off that joined string first (R24): the hook rewrites
+   the typed line to `@@ '<whole prompt>'`, one quoted word, so there is no argv token
+   left to match on by the time this process starts. Empty prompt exits 0 (REQ-06).
 2. **Session key.** `$TMUX_PANE` if set, else `$STY` plus tty, else the tty device path;
    hashed to a filesystem-safe name.
 3. **Context** (skipped under `--no-context`):
-   - tmux/screen → `tmux capture-pane -p` (or `screen -X hardcopy`), take from the
-     first line matching the trigger to the bottom.
+   - tmux/screen → `tmux capture-pane -p` (or `screen -X hardcopy`), then select by
+     *prior* conversation rather than by first trigger (A-04): two or more trigger
+     lines → from the first of them to the bottom; exactly one → the whole visible
+     pane, since that one is this turn's own already-echoed question; none → nothing.
    - otherwise → read `~/.qmx2/sessions/<key>.jsonl`.
    - Truncate to the last `max_context_lines` (NFR-02).
 4. **Compose.** Context under a `## Terminal` heading, then the question. A short system

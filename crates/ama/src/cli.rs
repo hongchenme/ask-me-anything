@@ -59,7 +59,9 @@ pub fn run() -> ExitCode {
         .is_some_and(|n| n == "@@");
 
     if invoked_as_trigger {
-        return ask(&argv[1..].join(" "), false);
+        let joined = argv[1..].join(" ");
+        let (question, no_context) = peel_no_context(&joined);
+        return ask(question, no_context);
     }
 
     match Cli::parse().command {
@@ -81,6 +83,31 @@ pub fn run() -> ExitCode {
 fn fail(code: u8, msg: &str) -> ExitCode {
     eprintln!("ama: {msg}");
     ExitCode::from(code)
+}
+
+/// R24/REQ-15: honour a leading `--no-context` on the `@@` trigger path.
+///
+/// `--no-context` is one of only two mitigations 04-design.md names for the
+/// owner-accepted RISK-01, and the trigger path used to join all of argv
+/// into the question -- so `@@ --no-context what is my key` sent the whole
+/// pane *and* asked the agent a question starting "--no-context".
+///
+/// This peels the *joined* question, not an argv token, because argv does
+/// not survive the hook: `ama.bash` rewrites the typed line to
+/// `@@ '--no-context what is my key'`, a single quoted word, so by the time
+/// this process starts `argv[1..]` is one element. Peeling after the join
+/// is the only form that covers both that path and a script's
+/// `@@ --no-context foo`. Everything after the flag is still the question
+/// byte-for-byte.
+///
+/// Accepted cost: a question whose literal first word is `--no-context` is
+/// no longer askable through the trigger. `ama ask -- --no-context …`
+/// still is. Only a whole token counts, so `--no-contextual` is a question.
+fn peel_no_context(question: &str) -> (&str, bool) {
+    match question.trim_start().strip_prefix("--no-context") {
+        Some(rest) if rest.is_empty() || rest.starts_with(char::is_whitespace) => (rest, true),
+        _ => (question, false),
+    }
 }
 
 /// R2: `NoCommand`/`Spawn` name something the user's `agent:` line cannot
@@ -248,12 +275,29 @@ fn integration_status() -> String {
     }
 }
 
+/// R30/REQ-25: `is_file()` is not the question `doctor` is asking. A
+/// mode-644 file sitting on `$PATH` -- a downloaded-but-never-`chmod`ed
+/// agent, the single most likely way for this check to matter -- made
+/// `doctor` print `status ok`, and then the next turn failed at spawn with
+/// a permission error. REQ-25 says "whether the agent is executable", so
+/// test that.
+#[cfg(unix)]
+fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &std::path::Path) -> bool {
+    path.is_file()
+}
+
 fn which(program: &str) -> bool {
     if program.contains('/') {
-        return std::path::Path::new(program).is_file();
+        return is_executable(std::path::Path::new(program));
     }
     std::env::var("PATH")
-        .is_ok_and(|paths| std::env::split_paths(&paths).any(|d| d.join(program).is_file()))
+        .is_ok_and(|paths| std::env::split_paths(&paths).any(|d| is_executable(&d.join(program))))
 }
 
 #[cfg(test)]
@@ -276,6 +320,34 @@ mod tests {
                 source: std::io::Error::new(std::io::ErrorKind::NotFound, "not found"),
             }),
             EXIT_CONFIG
+        );
+    }
+
+    // R24: the token boundary is the whole of the risk here -- peel too
+    // eagerly and a legitimate question silently loses its first word and
+    // its context with it.
+    #[test]
+    fn a_leading_no_context_token_is_peeled_off_a_trigger_question() {
+        assert_eq!(
+            peel_no_context("--no-context what is my key"),
+            (" what is my key", true)
+        );
+        assert_eq!(peel_no_context("--no-context"), ("", true));
+    }
+
+    #[test]
+    fn no_context_is_only_peeled_as_a_whole_leading_token() {
+        assert_eq!(
+            peel_no_context("--no-contextual awareness"),
+            ("--no-contextual awareness", false)
+        );
+        assert_eq!(
+            peel_no_context("why is --no-context ignored"),
+            ("why is --no-context ignored", false)
+        );
+        assert_eq!(
+            peel_no_context("what does --no-context do"),
+            ("what does --no-context do", false)
         );
     }
 

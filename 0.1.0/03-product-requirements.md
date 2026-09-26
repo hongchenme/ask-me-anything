@@ -24,7 +24,7 @@ maps requirement groups to the test layers defined in
 |---|---|
 | **Trigger** | The literal `@@` followed by one space at the start of a shell line |
 | **Prompt** | Everything after the trigger, byte-for-byte as typed |
-| **View** | The visible terminal screen, from the first trigger line on it to the bottom |
+| **View** | The visible terminal screen; from the first *prior* trigger line on it to the bottom once a conversation is under way, otherwise the whole screen (A-04) |
 | **Turn** | One prompt and its answer |
 | **Session** | The sequence of turns sharing a view; ends when the screen is cleared |
 | **Agent** | The user's own CLI, named in `~/.qmx2/config.yml` |
@@ -57,7 +57,7 @@ maps requirement groups to the test layers defined in
 
 | ID | Requirement | Acceptance criterion |
 |---|---|---|
-| REQ-11 | Inside tmux or screen, context is the visible pane from the first trigger line to the bottom, including other commands' output. | tmux e2e: run `ls /nonexistent`, then `@@ …`; the composed prompt contains the `ls` error. |
+| REQ-11 | Inside tmux or screen, context is the visible pane, including other commands' output. Once a prior turn is on screen — two or more trigger lines — it runs from the **first prior** trigger line to the bottom; when the current question is the only trigger on the pane, it is the **whole** visible pane (amended by A-04). | tmux e2e, with no prior `@@` on the pane: run `ls /nonexistent`, then `@@ …`; the composed prompt contains the `ls` error. Second tmux e2e, with a prior turn on screen: the slice starts at that prior trigger. |
 | REQ-12 | Outside a multiplexer, context is the per-session transcript of prior turns. | Integration with `TMUX` unset: second turn's composed prompt contains the first turn's question and answer. |
 | REQ-13 | Clearing the screen starts a fresh conversation. | tmux e2e: two turns, `clear`, third turn; composed prompt for the third contains neither earlier turn. Non-tmux: the hook fires `ama session reset` on `clear`, `reset`, and Ctrl-L. |
 | REQ-14 | Sessions are isolated per pane or per TTY. | Integration: two distinct session keys produce independent transcripts. |
@@ -118,3 +118,20 @@ at the start of the line, which every capture requirement had assumed. Recorded 
 SDLC §14 as a plan-time return to S2. Scope impact: one extra branch in the shell hook
 and a unit-tested split function (ADR-006 in [04-design.md](04-design.md)); no change
 to architecture, risk tier, or any other requirement.
+
+**Amendment A-04, 2026-09-26 (during the S4 whole-branch review).** REQ-11's statement
+amended, and the **View** domain term with it. The statement said context ran "from the
+first trigger line to the bottom", but REQ-11's own acceptance criterion — `ls
+/nonexistent`, then `@@ …`, with the `ls` error reaching the agent — needs content from
+*above* the first trigger: by the time `ama` captures the pane the current question has
+already been echoed onto it, so when that question is the only trigger the slice was
+that single line and the failure being asked about was discarded. Statement and
+criterion could not both hold; the e2e test that appeared to cover this sent a *prior*
+`@@` first, which is not the criterion's scenario. The behaviour was fixed rather than
+the requirement re-scoped, because ADR-002 justifies the entire tmux path as "the
+difference between answering 'why did that build fail?' and not" — precisely this case.
+Recorded under SDLC §14 as a review-time return to S2. Scope impact: one branch in
+`context::select_context` plus its unit fixtures, and an e2e test that runs the
+criterion verbatim; no change to architecture, risk tier, or any other requirement.
+RISK-01 is unchanged in kind — the widened context is already-visible screen content,
+and `--no-context` still opts out of it.

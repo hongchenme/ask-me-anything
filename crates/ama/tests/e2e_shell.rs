@@ -211,15 +211,41 @@ fn the_readme_first_example_works_verbatim() {
     );
 }
 
+/// REQ-02 / RISK-02, and the one test that pins the *composition* of the
+/// hook with `__ama_sq` rather than `__ama_sq` alone.
+///
+/// R27: the obvious needle -- the question text anywhere on the pane -- is
+/// satisfied by the terminal's own echo of the typed line, before the agent
+/// is involved at all, so this test could not fail for the property it
+/// names. Verified by mutation: replacing `$(__ama_sq "$prompt")` in a copy
+/// of `ama.bash` with a plain `"$prompt"` left it green while the agent
+/// actually received `$HOME` *expanded*; for `@@ what does $(id -un) mean?`
+/// the same mutant had the user's own shell run a command out of a typed
+/// question and hand the agent `what does hong mean?`. That is RISK-02's
+/// exact failure mode. TEST-P01 does not cover it either -- it exercises
+/// `__ama_sq` in isolation, so a hook that stops *calling* it passes every
+/// property test.
+///
+/// Counting occurrences does not discriminate: `>= 2` passes on the mutant
+/// too (the echo, plus the context block's own copy of that echo). What
+/// does is the `## Question` body as `fake-agent-echo` mirrors it back --
+/// a `CONT_INDENT` continuation line carrying the question and nothing
+/// else. On the mutant that line shows the expanded path; only a hook that
+/// really quotes reproduces the typed bytes there.
 #[test]
 fn shell_metacharacters_reach_the_agent_untouched() {
     require_tmux!();
+    const QUESTION: &str = "list *.rs and $HOME | grep foo && done?";
     let p = Pane::start("ama-e2e-meta", "bash");
-    p.send("@@ list *.rs and $HOME | grep foo && done?");
-    let pane = p.wait_for("🤖:", Duration::from_secs(10));
+    p.send(&format!("@@ {QUESTION}"));
+    // Not `wait_for("🤖:")`: the robot marker lands on the *first* line the
+    // agent streams, and `## Question` is the last section of the composed
+    // prompt, so the needle below is what has to be waited for.
+    let needle = format!("\n{}{QUESTION}", ama::context::CONT_INDENT);
+    let pane = p.wait_for(&needle, Duration::from_secs(10));
     assert!(
-        pane.contains("list *.rs and $HOME | grep foo && done?"),
-        "{pane}"
+        pane.contains(&needle),
+        "the question must reach the agent byte-for-byte\n{pane}"
     );
 }
 
@@ -330,6 +356,48 @@ fn clear_and_trigger_on_one_line_starts_a_fresh_conversation() {
 // once, never in the typed command, so a genuine *second* occurrence can
 // only be explained by `fake-agent-echo` mirroring back a composed prompt
 // that actually included the failure as context.
+/// R23: **REQ-11's acceptance criterion, verbatim** -- `ls /nonexistent`,
+/// then `@@ …`, with no prior `@@` anywhere on the pane. The test below
+/// looks nearly identical but is not the criterion: it sends a *prior*
+/// trigger first, which is what makes "slice from the first trigger down"
+/// reach above the question at all.
+///
+/// The current question is already echoed on the pane by the time `ama`
+/// captures it, so when it is the only trigger the old slice was that one
+/// line and every command above it -- including the failure being asked
+/// about -- was discarded. ADR-002 justifies the entire tmux path as "the
+/// difference between answering 'why did that build fail?' and not", so
+/// this is the product's headline case, and it did not work.
+///
+/// The needle is the same one the test below uses, for the same reason:
+/// "No such file" appears exactly once in GNU `ls`'s error and never in a
+/// typed line, so a *second* occurrence can only be `fake-agent-echo`
+/// mirroring back a composed prompt that really carried the failure.
+/// (`nonexistent-marker-xyz` would not do: `ls` prints the name back, so
+/// it is already at two occurrences with no agent involved.)
+#[test]
+fn the_first_question_in_a_pane_still_sees_the_output_above_it() {
+    require_tmux!();
+    let p = Pane::start("ama-e2e-first-context", "bash");
+    p.send("ls /nonexistent-marker-xyz");
+    p.wait_for("nonexistent-marker-xyz", Duration::from_secs(5));
+    p.send("@@ why did that fail");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let text = p.capture();
+        if text.matches("No such file").count() >= 2 {
+            break;
+        }
+        if std::time::Instant::now() > deadline {
+            panic!(
+                "the first question in a pane must still carry the output above it \
+                 (REQ-11, as amended by A-04)\n--- pane ---\n{text}"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(120));
+    }
+}
+
 #[test]
 fn terminal_output_from_other_commands_becomes_context() {
     require_tmux!();
@@ -358,6 +426,36 @@ fn terminal_output_from_other_commands_becomes_context() {
     );
 }
 
+/// R24 / REQ-15, on the path the defect was reported from: a real pane with
+/// a secret visible on it. `--no-context` is one of only two mitigations
+/// `04-design.md` names for the owner-accepted RISK-01, and through the
+/// trigger it did neither half of its job -- the whole pane went to the
+/// agent and the question itself read `--no-context what is my key`.
+///
+/// This is the e2e half rather than a duplicate of the integration test:
+/// the hook rewrites the typed line to `@@ '--no-context what is my key'`,
+/// a *single* quoted word, so a fix that peeled an argv token would pass
+/// the integration test and still leak here. Only peeling the joined
+/// question covers both.
+///
+/// Waiting on the `## Question` body is what makes this discriminating:
+/// before the fix that line read `   --no-context what is my key`, so the
+/// needle below never appears and the timeout dumps the leaking pane.
+#[test]
+fn the_trigger_honours_no_context_in_a_real_shell() {
+    require_tmux!();
+    let p = Pane::start("ama-e2e-no-context", "bash");
+    p.send("echo AWS_SECRET_ACCESS_KEY=zzz999");
+    p.wait_for("zzz999", Duration::from_secs(5));
+    p.send("@@ --no-context what is my key");
+    let needle = format!("\n{}what is my key", ama::context::CONT_INDENT);
+    let pane = p.wait_for(&needle, Duration::from_secs(10));
+    assert!(
+        !pane.contains("## Terminal"),
+        "`@@ --no-context` must not send the pane (RISK-01's mitigation)\n{pane}"
+    );
+}
+
 /// R16 (supersedes R7): the fast echo agent used by every other test above
 /// almost certainly exits before Ctrl-C is ever sent, so it can only prove
 /// "the shell survived", not "Ctrl-C interrupted a running agent" -- and
@@ -380,7 +478,11 @@ fn an_interrupt_returns_a_usable_shell() {
     p.send_raw("C-c");
     std::thread::sleep(Duration::from_millis(400));
     p.send("echo rc=$?");
-    let pane = p.wait_for("rc=", Duration::from_secs(5));
+    // Not `wait_for("rc=")`: that needle is satisfied by the terminal's own
+    // echo of `echo rc=$?`, so the assertion below could be evaluated
+    // before the output it is about even exists -- in the only test that
+    // covers NFR-05's exit code 130.
+    let pane = p.wait_for("rc=130", Duration::from_secs(5));
     assert!(
         pane.contains("rc=130"),
         "NFR-05's fourth exit code (130, interrupted) must reach $?\n{pane}"
@@ -446,6 +548,50 @@ fn a_trigger_that_is_not_at_a_command_position_is_left_alone() {
     assert!(
         !pane.contains("🤖:"),
         "must not hijack a real command\n{pane}"
+    );
+}
+
+/// R26 / REQ-03, driven through a real shell rather than through
+/// `__ama_split` alone. Both lines below are ordinary `echo`s that an
+/// uninstrumented bash prints verbatim, and REQ-03 -- "lines not beginning
+/// with the trigger behave exactly as in an uninstrumented shell" -- makes
+/// that non-negotiable for anything bound to Enter. Rule 2 had no notion of
+/// quoting, so the operator inside each quoted word looked like a real
+/// command separator: the first line was silently rewritten to
+/// `echo 'clear && @@ 'joke'\'''` and printed `clear && @@ joke\`, and the
+/// second was rewritten to an unbalanced `echo "a; @@ 'not a prompt"'`,
+/// dropping the shell to `PS2` where it sat forever.
+///
+/// The assertions are deliberately line-*exact*: `tmux send-keys` echoes
+/// the typed line, so the pane contains `clear && @@ joke` as a substring
+/// whether or not the pass-through worked. Only a correct pass-through puts
+/// that text on a line of its own, as `echo`'s output.
+///
+/// The trailing marker is what catches the `PS2` hang, and it is split as
+/// `QUOTED-OP-'DONE'` for the same reason: the typed line is echoed even at
+/// a continuation prompt, so a marker spelled literally would appear on the
+/// pane while the shell sat wedged. Only the shell actually *running* the
+/// `echo` joins the two halves.
+#[test]
+fn a_quoted_operator_before_the_trigger_leaves_an_ordinary_command_alone() {
+    require_tmux!();
+    let p = Pane::start("ama-e2e-quoted-op", "bash");
+    p.send("echo 'clear && @@ joke'");
+    p.send("echo \"a; @@ not a prompt\"");
+    p.send("echo QUOTED-OP-'DONE'");
+    let pane = p.wait_for("QUOTED-OP-DONE", Duration::from_secs(8));
+    let has_line = |needle: &str| pane.lines().any(|l| l.trim_end() == needle);
+    assert!(
+        has_line("clear && @@ joke"),
+        "a quoted `&&` before the trigger must not corrupt the command\n{pane}"
+    );
+    assert!(
+        has_line("a; @@ not a prompt"),
+        "a quoted `;` before the trigger must not corrupt the command\n{pane}"
+    );
+    assert!(
+        !pane.contains("🤖:"),
+        "neither line is a trigger; the agent must not run\n{pane}"
     );
 }
 
@@ -519,27 +665,43 @@ fn an_existing_c_m_binding_is_chained_not_clobbered() {
     );
 }
 
-/// R18 finding 2: readline's own `clear-screen` (\C-l's default binding)
-/// clears the screen *and* redraws whatever was on the line; replacing it
-/// with a `bind -x` widget that clears but never touches
-/// `READLINE_LINE`/`READLINE_POINT` must still preserve that -- verified
-/// directly that it previously did not: pressing Ctrl-L left the pane
-/// completely blank, not even redrawing an empty prompt, because (unlike
-/// every other `bind -x` key tested) \C-l specifically gets no automatic
-/// post-callback redraw unless those variables are actually assigned
-/// during the callback. This widget had no test anywhere before this.
+/// Ctrl-L must clear the screen *and* the scrollback, and must not throw
+/// away whatever the user was part-way through typing.
+///
+/// R28: the buffer assertion was the whole of this test, and it cannot
+/// fail for the property the test is named after -- a widget that did
+/// nothing at all would leave the in-progress line exactly where it was
+/// and pass. The scrollback marker below is what pins the clearing, and it
+/// is the same technique the zsh counterpart already used: fill well past
+/// the pane height, then require `capture-pane -S` (which sees history
+/// `-p` alone cannot) to come back with nothing. Verified by mutation:
+/// with `__ama_clear_screen_widget`'s `printf` deleted, the buffer check
+/// still passes and this one fails.
 #[test]
-fn ctrl_l_clears_the_screen_without_losing_the_typed_line() {
+fn ctrl_l_clears_the_screen_and_scrollback_without_losing_the_typed_line() {
     require_tmux!();
     let p = Pane::start("ama-e2e-ctrl-l", "bash");
+    // Fill well past the pane's 60-row height, so some of this is only
+    // reachable through scrollback once Ctrl-L has run.
+    p.send("for i in $(seq 1 80); do echo SCROLLBACK-MARKER-$i; done");
+    p.wait_for("SCROLLBACK-MARKER-80", Duration::from_secs(5));
+
     p.send_raw("echo HALF-TYPED-COMMAND");
     std::thread::sleep(Duration::from_millis(400));
     p.send_raw("C-l");
     std::thread::sleep(Duration::from_millis(400));
+
     let pane = p.capture();
     assert!(
         pane.contains("echo HALF-TYPED-COMMAND"),
         "Ctrl-L must preserve the in-progress line, not just clear the screen\n{pane}"
+    );
+
+    let history = p.capture_history(500);
+    assert!(
+        !history.contains("SCROLLBACK-MARKER"),
+        "Ctrl-L must actually clear the screen and drop scrollback, \
+         not merely leave the typed line alone\n{history}"
     );
 }
 

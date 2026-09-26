@@ -91,9 +91,29 @@ pub fn load_turns(key: &SessionKey) -> Vec<Turn> {
         .collect()
 }
 
+/// R31: the transcripts inside are already `0600` (NFR-06), but the
+/// directory listing them was whatever the umask happened to allow --
+/// typically `0755`, so every local account could enumerate one session
+/// file per terminal the user had open, and see them appear and disappear.
+/// Cheap defence in depth for a directory that holds captured pane
+/// content. The mode applies only to directories this call creates.
+#[cfg(unix)]
+fn create_sessions_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+}
+
+#[cfg(not(unix))]
+fn create_sessions_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)
+}
+
 pub fn append_turn(key: &SessionKey, turn: &Turn) -> std::io::Result<()> {
     let dir = sessions_dir();
-    std::fs::create_dir_all(&dir)?;
+    create_sessions_dir(&dir)?;
     let path = transcript_path(key);
     let mut opts = std::fs::OpenOptions::new();
     opts.create(true).append(true);

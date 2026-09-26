@@ -133,6 +133,34 @@ fn the_transcript_is_readable_only_by_its_owner() {
     }
 }
 
+/// R31: the transcripts are `0600` (NFR-06, above), but the directory
+/// holding them inherited the umask -- typically `0755`, letting any local
+/// account enumerate one file per open terminal. Defence in depth for a
+/// directory of captured pane content.
+#[test]
+fn the_sessions_directory_is_readable_only_by_its_owner() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let (d, cfg) = env();
+        ama(&cfg, d.path())
+            .args(["ask", "--", "q"])
+            .assert()
+            .success();
+        let sessions = d.path().join(".qmx2/sessions");
+        let mode = std::fs::metadata(&sessions)
+            .expect("sessions dir")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o777,
+            0o700,
+            "sessions dir must be 0700, got {:o}",
+            mode & 0o777
+        );
+    }
+}
+
 #[test]
 fn a_missing_config_exits_two_and_says_where_to_put_it() {
     let d = tempfile::tempdir().expect("tempdir");
@@ -159,10 +187,19 @@ fn a_failing_agent_exits_one() {
     // R1: the exit-code contract is applied in cli::ask, which maps any
     // non-zero agent exit to 1 -- it does not forward the agent's raw code
     // (fake-agent-fail exits 7; see agent::run's own test for that raw value).
+    //
+    // R25: `.code(1)` alone left the *other* half of REQ-10 -- "agent stderr
+    // is surfaced, not swallowed" -- asserted by nothing at all. That
+    // half rests entirely on `Stdio::inherit()` in `agent::run`; changing
+    // that one line to `Stdio::null()` passed the whole suite while
+    // silently discarding every diagnostic a real agent emits. Verified by
+    // mutation: with `Stdio::null()` this assertion fails and `.code(1)`
+    // still passes.
     ama(&cfg, d.path())
         .args(["ask", "--", "x"])
         .assert()
-        .code(1);
+        .code(1)
+        .stderr(predicates::str::contains("agent exploded"));
 }
 
 #[test]
@@ -214,6 +251,69 @@ fn the_at_at_name_is_an_alias_for_ask() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("hello from the alias"), "stdout: {stdout}");
+}
+
+/// R24 / REQ-15. `--no-context` is one of only two mitigations `04-design.md`
+/// names for the owner-accepted RISK-01 (terminal content reaches the agent
+/// unfiltered), and through the trigger it did neither half of its job: the
+/// trigger path joined *all* of argv into the question, so `@@ --no-context
+/// what is my key` sent the agent a `## Terminal` block -- secrets included
+/// -- and a question reading `--no-context what is my key`.
+///
+/// A prior turn is recorded first so there is real context to suppress:
+/// without it a fresh session has nothing to gather and the assertion
+/// would hold whether or not the flag did anything.
+///
+/// Accepted cost of peeling the token here (R24): a question whose literal
+/// first word is `--no-context` is no longer askable through the trigger.
+/// `ama ask -- --no-context …` still works, and is covered by
+/// `a_question_starting_with_a_hyphen_is_taken_literally` above.
+#[test]
+fn the_trigger_honours_a_leading_no_context_flag() {
+    let (d, cfg) = env();
+    let bin = assert_cmd::cargo::cargo_bin("ama");
+    let alias = d.path().join("@@");
+    std::fs::copy(&bin, &alias).expect("copy");
+
+    ama(&cfg, d.path())
+        .args(["ask", "--", "SECRET-MARKER-9X7"])
+        .assert()
+        .success();
+
+    let mut cmd = Command::new(&alias);
+    let out = cmd
+        .env("AMA_CONFIG", &cfg)
+        .env("HOME", d.path())
+        .env("AMA_SESSION", "integration-cli-test")
+        .env_remove("TMUX")
+        .env_remove("STY")
+        .args(["--no-context", "what", "is", "my", "key"])
+        .output()
+        .expect("run the `@@` alias");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("## Terminal"),
+        "`@@ --no-context` must not send context:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("SECRET-MARKER-9X7"),
+        "`@@ --no-context` must not leak the prior turn:\n{stdout}"
+    );
+    // `fake-agent-echo` mirrors the composed prompt back through `Robot`,
+    // which indents every line after the first with `CONT_INDENT` -- so the
+    // `## Question` body arrives as an indented line of its own. Pinning it
+    // that way, rather than merely asserting the words appear, is what
+    // distinguishes "the flag was peeled" from "the flag was asked as part
+    // of the question".
+    let question_line = format!("\n{}what is my key\n", ama::context::CONT_INDENT);
+    assert!(
+        stdout.contains(&question_line),
+        "the flag must be peeled off the question, not asked as part of it:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("--no-context"),
+        "the flag must not survive into the question:\n{stdout}"
+    );
 }
 
 /// R4: `trailing_var_arg` alone still leaves clap treating a leading hyphen
@@ -442,6 +542,36 @@ fn doctor_fails_when_the_agent_is_not_installed() {
         .assert()
         .code(2)
         .stderr(predicates::str::contains("definitely-not-installed"));
+}
+
+/// R30/REQ-25: "whether the agent is executable", not "whether a file of
+/// that name exists". `which()` tested `is_file()`, so a mode-644 agent --
+/// downloaded and never `chmod`ed, which is how this actually happens --
+/// got `status ok` from `doctor` and then failed at spawn on the next
+/// turn, which is exactly the situation `doctor` exists to pre-empt.
+#[test]
+fn doctor_fails_when_the_agent_is_not_executable() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().expect("tempdir");
+        let agent = d.path().join("not-chmodded-agent");
+        std::fs::write(&agent, "#!/usr/bin/env bash\ncat\n").expect("write agent");
+        std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o644))
+            .expect("chmod 644");
+
+        let cfg = d.path().join("config.yml");
+        std::fs::write(&cfg, format!("agent: {}\n", agent.display())).expect("write config");
+
+        // Sanity: the file really is there, so this is testing the
+        // permission bit and not a missing path.
+        assert!(agent.is_file());
+        ama(&cfg, d.path())
+            .arg("doctor")
+            .assert()
+            .code(2)
+            .stderr(predicates::str::contains("not-chmodded-agent"));
+    }
 }
 
 #[test]

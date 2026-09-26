@@ -230,6 +230,39 @@ fn survives_an_embedded_newline_from_bracketed_paste() {
     );
 }
 
+/// R26 / REQ-03. Rule 2 tested the text before the first trigger for a
+/// trailing `;`, `&`, or `|` with no notion of quoting, so an operator
+/// *inside a quoted word* looked exactly like a real command separator.
+/// Both lines below are ordinary commands that any uninstrumented shell
+/// simply prints: before this guard the first was silently rewritten into a
+/// corrupted string, and the second dropped the shell to `PS2` and hung.
+/// REQ-03 -- "lines not beginning with the trigger behave exactly as in an
+/// uninstrumented shell" -- is the non-negotiable for anything bound to
+/// Enter, and the README's own examples make `clear && @@ …` a phrase these
+/// users are unusually likely to quote and echo.
+///
+/// The guard fails closed: an odd number of `'` or of `"` before the trigger
+/// means the split is rejected rather than guessed at.
+#[test]
+fn an_operator_inside_a_quoted_word_is_not_a_command_separator() {
+    assert_eq!(split("echo 'clear && @@ joke'"), None);
+    assert_eq!(split("echo \"a; @@ not a prompt\""), None);
+}
+
+/// The other half of the same guard: a *balanced* quote before the trigger
+/// must still split, or the fix would have cost the README's own idiom.
+#[test]
+fn a_balanced_quote_before_the_trigger_still_splits() {
+    assert_eq!(
+        split("clear && @@ joke"),
+        Some(("clear && ".into(), "joke".into()))
+    );
+    assert_eq!(
+        split("git commit -m \"wip\" && @@ what changed"),
+        Some(("git commit -m \"wip\" && ".into(), "what changed".into()))
+    );
+}
+
 // `ama.zsh`'s `__ama_split` is a straight port of the bash algorithm's
 // parameter-expansion approach (see the comment there), but it is worth
 // pinning against real zsh independently rather than trusting the port:
@@ -281,6 +314,18 @@ fn zsh_split_recognises_the_same_triggers() {
     assert_eq!(
         split("@@ first line\nsecond line"),
         Some((String::new(), "first line\nsecond line".into()))
+    );
+    // R26: the quoting guard is a rule-2 property, so it has to hold in
+    // both shells, not just the one it was written against.
+    assert_eq!(split("echo 'clear && @@ joke'"), None);
+    assert_eq!(split("echo \"a; @@ not a prompt\""), None);
+    assert_eq!(
+        split("clear && @@ joke"),
+        Some(("clear && ".into(), "joke".into()))
+    );
+    assert_eq!(
+        split("git commit -m \"wip\" && @@ what changed"),
+        Some(("git commit -m \"wip\" && ".into(), "what changed".into()))
     );
 }
 

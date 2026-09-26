@@ -16,8 +16,20 @@ __ama_sq() {
 # keep "compare a && @@ b" whole, as one prompt — POSIX ERE has no lazy
 # quantifier, so this is done with parameter expansion (shortest/longest
 # match), not a greedy regex.
+#
+# Rule 2 only inspects the *text* before the trigger, and a `;`, `&` or `|`
+# inside a quoted word is not a command separator at all (R26): `echo
+# 'clear && @@ joke'` and `echo "a; @@ not a prompt"` are ordinary commands
+# that an uninstrumented shell simply prints, and REQ-03 makes behaving
+# identically non-negotiable for anything bound to Enter. Left unguarded,
+# the first was silently rewritten into a corrupted string and the second
+# left the shell sitting at PS2. Counting quotes is enough to fail closed:
+# an odd `'` or `"` count before the trigger means the prefix cannot be a
+# complete command, so the line is passed through untouched. A real trigger
+# hidden behind an unbalanced quote degrades to the plain `@@` binary --
+# the safe direction.
 __ama_split() {
-    local line=$1 lead trimmed head tail_re
+    local line=$1 lead trimmed head tail_re sq dq nsq ndq
     lead=${line%%[![:space:]]*}
     trimmed=${line#"$lead"}
 
@@ -28,7 +40,12 @@ __ama_split() {
     if [[ $line == *"@@ "* ]]; then
         head=${line%%"@@ "*}
         tail_re='[;&|][[:space:]]*$'
-        if [[ $head =~ $tail_re ]]; then
+        # Discard everything that is not a quote, then count what is left.
+        sq=${head//[!\']/}
+        dq=${head//[!\"]/}
+        nsq=${#sq}
+        ndq=${#dq}
+        if [[ $head =~ $tail_re ]] && (( nsq % 2 == 0 && ndq % 2 == 0 )); then
             printf '%s\x1f%s' "$head" "${line#*"@@ "}"
             return 0
         fi
@@ -82,17 +99,17 @@ __ama_hook() {
     return 0
 }
 
-# Ctrl-L (R18, finding 2): readline's own clear-screen preserves and
-# redraws whatever the user was typing, so this must too -- setting
-# READLINE_LINE/READLINE_POINT to empty here throws the in-progress line
-# away. `3J` also clears scrollback, matching what a user means by Ctrl-L.
-# Unlike other `bind -x` keys, \C-l specifically does not get an automatic
-# post-callback redraw unless READLINE_LINE/READLINE_POINT are actually
-# assigned during the callback -- verified directly: a widget that only
-# `printf`s the clear sequence and never touches them leaves the screen
-# blank with nothing redrawn at all, on every other key an untouched
-# buffer still gets redrawn. Re-assigning them to their own current value
-# preserves the line and is enough to make bash redraw it.
+# Ctrl-L: readline's own clear-screen preserves and redraws whatever the
+# user was typing, so this must too -- clearing READLINE_LINE here would
+# throw the in-progress line away. `3J` also clears scrollback, matching
+# what a user means by Ctrl-L.
+#
+# The two self-assignments are retained as belt and braces after an
+# unreproduced report (R18, finding 2) that \C-l gets no post-callback
+# redraw unless those variables are assigned during the callback; two
+# later reviewers could not reproduce it on bash 5.3.9 (R29). They are
+# provably safe to keep regardless: a bare `name=word` assignment expands
+# parameters but performs neither word splitting nor globbing.
 __ama_clear_screen_widget() {
     ama session reset >/dev/null 2>&1
     printf '\033[H\033[2J\033[3J'

@@ -10,10 +10,22 @@ mkdir -p "$dest"
 install -m 0755 target/release/ama "$dest/ama"
 install -m 0755 target/release/ama "$dest/@@"
 
+# R32: `ama init` only knows bash and zsh, so anything else gets the bash
+# integration written to ~/.bashrc and a cheerful "Installed" -- a fish user
+# used to end up with nothing that works and nothing that said so. Still
+# install (the `ama` and `@@` binaries are useful on their own, REQ-27), but
+# say plainly that the Enter trigger will not be live.
 shell_name=$(basename "${SHELL:-bash}")
 case "$shell_name" in
     zsh) rc="$HOME/.zshrc" ;;
-    *) rc="$HOME/.bashrc"; shell_name=bash ;;
+    bash) rc="$HOME/.bashrc" ;;
+    *)
+        echo "Warning: \$SHELL is '${SHELL:-unset}'. ama's Enter trigger supports bash and zsh only," >&2
+        echo "         so '@@ <question>' will not fire in $shell_name. Installing the bash" >&2
+        echo "         integration into ~/.bashrc anyway; 'ama ask -- <question>' works in any shell." >&2
+        rc="$HOME/.bashrc"
+        shell_name=bash
+        ;;
 esac
 
 # R20: `ama init`'s own output never needs $dest on PATH -- it's eval'd
@@ -37,7 +49,10 @@ case ":$PATH:" in
         ;;
 esac
 
-line="eval \"\$($dest/ama init $shell_name)\""
+# R33: `$dest` is quoted inside the generated line too. Unquoted, a prefix
+# containing a space (`AMA_PREFIX="$HOME/my tools/bin"`) writes an rc line
+# that word-splits on every later shell start.
+line="eval \"\$(\"$dest/ama\" init $shell_name)\""
 if ! grep -qF "ama init $shell_name" "$rc" 2>/dev/null; then
     printf '\n# ama -- ask me anything\n%s\n' "$line" >> "$rc"
     echo "Added integration to $rc"
@@ -53,5 +68,9 @@ fi
 
 echo
 echo "Installed. Open a new shell, then try:  @@ what is this project about"
-echo "(\`ama doctor\` will confirm the integration is live.)"
+# R34: the hook is not live in *this* process, so the report below always
+# says `integration  not loaded`. Correct, but straight after "Added
+# integration to ~/.bashrc" it reads as a failed install.
+echo "(\`ama doctor\` reports \`integration  not loaded\` here -- expected until you open a"
+echo " new shell. Run it again there to confirm the trigger is live.)"
 "$dest/ama" doctor || true

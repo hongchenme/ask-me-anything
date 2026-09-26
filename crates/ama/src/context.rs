@@ -54,6 +54,48 @@ pub fn slice_from_first_trigger(lines: &[String]) -> &[String] {
     }
 }
 
+/// Indices of the *command* lines bearing the trigger, answer lines skipped.
+fn trigger_positions(lines: &[String]) -> impl Iterator<Item = usize> + '_ {
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| !is_answer_line(l) && l.contains(TRIGGER_IN_LINE))
+        .map(|(i, _)| i)
+}
+
+/// The pane content this turn should send (REQ-11, as amended by **A-04**).
+///
+/// R23. "From the first trigger line to the bottom" is right only once a
+/// conversation is already on screen. By the time `ama` captures the pane
+/// the current question has *already been echoed onto it*, so when that
+/// question is the only trigger, slicing from "the first trigger" keeps
+/// exactly one line -- the question -- and throws away the whole screen
+/// above it, including the failing command the user is asking about. That
+/// is REQ-11's own acceptance criterion (`ls /nonexistent`, then `@@ …`)
+/// and ADR-002's stated reason for scraping the pane at all: "the
+/// difference between answering 'why did that build fail?' and not".
+///
+/// So the rule is by *prior* conversation, not by first trigger:
+///
+/// * **Two or more triggers** -- a prior turn is on screen. Start at the
+///   first of them, exactly as before, so the conversation has a boundary
+///   and a cleared screen still starts fresh (REQ-13).
+/// * **Exactly one** -- it is this turn's own echo, with nothing before it.
+///   Send the whole visible pane.
+/// * **None** -- e.g. `clear && @@ …`, where `clear` has already wiped the
+///   echo. Send nothing; REQ-13 wants a fresh conversation.
+///
+/// Note the widening only ever *adds* already-visible screen content, which
+/// RISK-01 (accepted by the owner) covers and `--no-context` opts out of.
+pub fn select_context(lines: &[String]) -> &[String] {
+    let mut triggers = trigger_positions(lines);
+    match (triggers.next(), triggers.next()) {
+        (Some(_), Some(_)) => slice_from_first_trigger(lines),
+        (Some(_), None) => lines,
+        _ => &[],
+    }
+}
+
 /// Drop the run of blank rows at the very end of a pane capture.
 ///
 /// `tmux capture-pane -p` and `screen -X hardcopy` both pad their dump out to
@@ -139,7 +181,7 @@ pub fn gather(source: Source, key: &SessionKey, max: usize) -> Vec<String> {
         Source::Transcript => None,
     };
     let lines = match captured {
-        Some(pane) => slice_from_first_trigger(trim_trailing_blank(&pane)).to_vec(),
+        Some(pane) => select_context(trim_trailing_blank(&pane)).to_vec(),
         None => from_transcript(key),
     };
     cap(&lines, max).to_vec()

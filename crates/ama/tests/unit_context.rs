@@ -74,6 +74,79 @@ fn a_stray_answer_fragment_before_the_real_trigger_does_not_pollute_the_start() 
     assert!(got[0].contains("real question"));
 }
 
+// ---- select_context: REQ-11 as amended by A-04 (R23) -----------------------
+
+#[test]
+fn the_only_trigger_on_the_pane_is_this_turn_so_the_whole_pane_is_context() {
+    // REQ-11's acceptance criterion, as a fixture: the question is already
+    // echoed on the pane when `ama` captures it, so slicing from the first
+    // trigger would keep only the last line and discard the very failure
+    // being asked about.
+    let pane = lines(
+        "user@host:~$ ls /nonexistent\n\
+         ls: cannot access '/nonexistent': No such file or directory\n\
+         user@host:~$ @@ 'why did that fail'",
+    );
+    let got = context::select_context(&pane);
+    assert_eq!(got.len(), 3, "got {got:?}");
+    assert!(
+        got[1].contains("No such file"),
+        "the failure above the question must survive, got {got:?}"
+    );
+}
+
+#[test]
+fn a_prior_trigger_still_bounds_the_conversation() {
+    // Two triggers: a real conversation is on screen, so the boundary is
+    // the first of them and the noise above it stays out (REQ-13).
+    let pane = lines(
+        "some earlier output nobody asked about\n\
+         user@host:~$ @@ 'first question'\n\
+         🤖: an answer\n\
+         user@host:~$ ls\n\
+         a.rs\n\
+         user@host:~$ @@ 'second question'",
+    );
+    let got = context::select_context(&pane);
+    assert_eq!(got.len(), 5, "got {got:?}");
+    assert!(got[0].contains("first question"));
+    assert!(
+        !got.iter().any(|l| l.contains("nobody asked about")),
+        "content above the first prior trigger must stay out, got {got:?}"
+    );
+}
+
+#[test]
+fn a_pane_with_no_trigger_is_a_fresh_conversation() {
+    // `clear && @@ ...` wipes the echo before `ama` captures, so there is
+    // no trigger at all -- and REQ-13 wants that to mean "start fresh",
+    // not "send whatever survived the clear".
+    let pane = lines("user@host:~$ \nleftover from before");
+    assert!(context::select_context(&pane).is_empty());
+}
+
+#[test]
+fn an_answer_line_mentioning_the_trigger_is_not_a_second_trigger() {
+    // The guard that `slice_from_first_trigger` needs matters twice as much
+    // here: miscounting a rendered answer as a trigger would flip a genuine
+    // first question into the two-trigger branch and silently restore the
+    // very defect A-04 fixes.
+    let pane = lines(
+        "user@host:~$ echo hi\n\
+         hi\n\
+         🤖: type @@ followed by a space\n   \
+         @@ like this\n\
+         user@host:~$ @@ 'why did that fail'",
+    );
+    let got = context::select_context(&pane);
+    assert_eq!(
+        got.len(),
+        5,
+        "answer lines must not count as triggers, got {got:?}"
+    );
+    assert!(got[0].contains("echo hi"));
+}
+
 #[test]
 fn trailing_blank_rows_below_the_cursor_are_dropped() {
     // What `tmux capture-pane -p` returns for a pane where only the first

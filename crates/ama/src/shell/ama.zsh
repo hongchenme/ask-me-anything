@@ -23,9 +23,16 @@ __ama_sq() {
 # parameter-expansion approach (shortest/longest match, not a greedy
 # regex); `extended_glob`, scoped to this function only, is the one
 # zsh-specific addition, needed for the `#` repetition operator below.
+#
+# The quote-balance guard below mirrors ama.bash's (R26), for the same
+# reason and with the same parameter expansions: a `;`, `&` or `|` inside a
+# quoted word is not a command separator, so `echo 'clear && @@ joke'` and
+# `echo "a; @@ not a prompt"` must pass through exactly as an uninstrumented
+# shell would run them (REQ-03). An odd `'` or `"` count before the trigger
+# fails closed.
 __ama_split() {
     setopt local_options extended_glob
-    local line=$1 lead trimmed head
+    local line=$1 lead trimmed head sq dq nsq ndq
     lead=${line%%[^[:space:]]*}
     trimmed=${line#"$lead"}
 
@@ -35,7 +42,12 @@ __ama_split() {
     fi
     if [[ $line == *'@@ '* ]]; then
         head=${line%%'@@ '*}
-        if [[ $head == *[\;\&\|][[:space:]]# ]]; then
+        # Discard everything that is not a quote, then count what is left.
+        sq=${head//[!\']/}
+        dq=${head//[!\"]/}
+        nsq=${#sq}
+        ndq=${#dq}
+        if [[ $head == *[\;\&\|][[:space:]]# ]] && (( nsq % 2 == 0 && ndq % 2 == 0 )); then
             printf '%s\x1f%s' "$head" "${line#*'@@ '}"
             return 0
         fi

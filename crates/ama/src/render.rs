@@ -4,8 +4,9 @@ use crate::context::{ANSWER_PREFIX, CONT_INDENT};
 use std::io::{self, Write};
 
 /// Writes `🤖: ` before the first byte and indents every later line, so a
-/// multi-line answer reads as one block and `context::slice_from_first_trigger`
-/// can tell answers from commands.
+/// multi-line answer reads as one block and `context`'s slicing can tell
+/// answers from commands -- both to find the conversation's start and to
+/// count how many real triggers are on the pane (A-04).
 pub struct Robot<W: Write> {
     inner: W,
     started: bool,

@@ -24,7 +24,7 @@ terminal, to the user's own agent CLI and streams the answer back inline.
 | **Risk tier** | R1 (see [risk register](02-discovery-and-risk.md#4-risk-register)) |
 | **Next action** | Whole-branch review, then S5 verification |
 | **Blockers** | None |
-| **Evidence** | `./check.sh` green · 110 tests · NFR-01 measured at 7.0 ms median vs a 50 ms budget |
+| **Evidence** | `./check.sh` green · 124 tests (110 at the end of S4, plus 14 from the whole-branch review's fix wave) · NFR-01 measured at 7.0 ms median vs a 50 ms budget |
 
 ## Artifact map
 
@@ -32,7 +32,7 @@ terminal, to the user's own agent CLI and streams the answer back inline.
 |---|---|---|
 | S0 | [01-intent.md](01-intent.md) | accepted |
 | S1 | [02-discovery-and-risk.md](02-discovery-and-risk.md) | accepted |
-| S2 | [03-product-requirements.md](03-product-requirements.md) | accepted (amended A-01) |
+| S2 | [03-product-requirements.md](03-product-requirements.md) | accepted (amended A-01, A-04) |
 | S2 | [04-design.md](04-design.md) | accepted (amended A-02) |
 | S3 | [05-implementation-plan.md](05-implementation-plan.md) | accepted |
 | S4 | [06-build-record.md](06-build-record.md) | complete |
@@ -52,13 +52,15 @@ terminal, to the user's own agent CLI and streams the answer back inline.
 
 ## Amendments
 
-Recorded under SDLC §14. Both were found while planning against the real spec and are
-returns to S2, not silent scope changes.
+Recorded under SDLC §14. A-01 through A-03 were found while planning against the real
+spec; A-04 was found by the whole-branch review. All are returns to S2, not silent
+scope changes.
 
 | ID | Date | Change | Impact |
 |---|---|---|---|
 | A-01 | 2026-09-26 | **REQ-28 added.** README example 3 is `clear && @@ show me the joke of the day`, so the trigger is not always at the start of the line — an assumption every capture requirement had made. ADR-006 defines the recognition order. | One extra branch in the shell hook and a unit-tested split function. No architecture, tier, or other requirement affected. |
 | A-03 | 2026-09-26 | **ADR-006 rule 2 inverted: the earliest trigger wins.** Task 1's review showed the original "last operator" rule was incoherent — `@@ compare a && @@ b` was one prompt, but a leading `clear && ` made the same text split at the *second* trigger, pushing `@@ compare a &&` back into the user's buffer as executable text. Rule 1 exists so the earliest trigger wins, so the old rule 2 contradicted its own decision. | One branch reimplemented with parameter expansion instead of a regex, plus a fixture. Found by review, not shipped. |
+| A-04 | 2026-09-26 | **REQ-11's statement amended: context is the whole visible pane when the current question is the only trigger on it.** The statement said "from the first trigger line to the bottom", but the question is already echoed on the pane when `ama` captures it, so its own acceptance criterion (`ls /nonexistent`, then `@@ …`) needed content from *above* that line and failed verbatim. Found by the whole-branch review; the behaviour was fixed rather than the requirement re-scoped, since ADR-002 justifies the tmux path as exactly this case. | One branch in `context::select_context`, four unit fixtures, and an e2e test running the criterion verbatim. No architecture, tier, or other requirement affected. |
 | A-02 | 2026-09-26 | **Rust `escape` module removed.** Nothing in Rust ever escapes: `@@` receives arguments the shell already parsed. Splitting and quoting must happen in the hook, since routing every Enter press through a subprocess would violate NFR-01. Both now live in the shell scripts, property-tested from Rust by driving the real shell. | Strictly better evidence — the oracle is now the shell that actually runs the code, not a Rust reimplementation of it. |
 
 ## Decisions carried into this cycle
@@ -90,7 +92,15 @@ real `bash -i` inside real `tmux` on the target machine:
 ## Documentation debt — cleared
 
 Both corrections landed in Task 10 (`1e01087`): the root [README.md](../README.md) now
-says `ama` throughout, and its examples show the quoted line that actually executes.
-A third correction was found during that task and fixed at the same time — the README
-had documented `@@ --no-context`, which does not work, because the trigger path joins
-all arguments into the question. It now documents `ama ask --no-context -- <question>`.
+says `ama` throughout, and the rewrite the shell integration performs is documented
+there. Examples 1–3 still show the line as **typed** — which is what the user sees
+before pressing Enter — with the quoted line that actually executes explained in a note
+beneath them. That resolution is fine; the earlier claim here that "its examples show
+the quoted line that actually executes" was not, and is corrected (R35).
+
+A third correction was found during that task — the README documented
+`@@ --no-context`, which did not work, because the trigger path joined all arguments
+into the question. The whole-branch review ruled the other way (R24): the flag is one
+of only two mitigations `04-design.md` names for the owner-accepted RISK-01, so the
+trigger path now honours it, and the README documents both `@@ --no-context …` and
+`ama ask --no-context -- …` again.
