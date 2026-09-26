@@ -163,6 +163,25 @@ impl Pane {
             .expect("capture-pane");
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
+
+    /// Like `capture`, but including up to `lines` of scrollback history
+    /// (`-S -N`), not just what is currently on screen. Used to tell
+    /// "the visible screen was cleared" apart from "the terminal's
+    /// scrollback was actually dropped, not just scrolled past".
+    fn capture_history(&self, lines: i32) -> String {
+        let out = Command::new("tmux")
+            .args([
+                "capture-pane",
+                "-t",
+                &self.name,
+                "-p",
+                "-S",
+                &format!("-{lines}"),
+            ])
+            .output()
+            .expect("capture-pane");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
 }
 
 impl Drop for Pane {
@@ -521,5 +540,137 @@ fn ctrl_l_clears_the_screen_without_losing_the_typed_line() {
     assert!(
         pane.contains("echo HALF-TYPED-COMMAND"),
         "Ctrl-L must preserve the in-progress line, not just clear the screen\n{pane}"
+    );
+}
+
+// ---- Task 8: the same integration, ported to zsh ---------------------------
+
+#[test]
+fn the_readme_first_example_works_in_zsh_too() {
+    require_tmux!();
+    if !have("zsh") {
+        eprintln!("skipping: zsh not installed");
+        return;
+    }
+    let p = Pane::start("ama-e2e-zsh", "zsh");
+    p.send("@@ what's this project all about?");
+    let pane = p.wait_for("🤖:", Duration::from_secs(10));
+    assert!(pane.contains("what's this project all about?"), "{pane}");
+}
+
+/// zsh's own `clear-screen` widget (bound to Ctrl-L by default) already
+/// preserves and redraws an in-progress line by itself -- confirmed
+/// directly against real zsh with no override installed at all, unlike
+/// bash's `bind -x` callbacks (ama.bash's R18 finding 2). So the buffer
+/// check below is really a sanity check that ama.zsh's override did not
+/// *break* that pre-existing behaviour. The scrollback check is the part
+/// that needed a real fix: zsh's `.clear-screen` only clears the visible
+/// screen, so without ama.zsh's added `\033[3J`, tmux's saved history
+/// still contains the earlier lines after Ctrl-L -- confirmed directly by
+/// running this same scenario against a widget that calls only
+/// `zle .clear-screen` with no `3J`, where the assertion below fails.
+#[test]
+fn ctrl_l_clears_the_screen_and_scrollback_without_losing_the_typed_line_in_zsh() {
+    require_tmux!();
+    if !have("zsh") {
+        eprintln!("skipping: zsh not installed");
+        return;
+    }
+    let p = Pane::start("ama-e2e-zsh-ctrl-l", "zsh");
+    // Fill well past the pane's 60-row height so some of this is only
+    // reachable via scrollback, not the visible screen, once Ctrl-L runs.
+    p.send("for i in $(seq 1 80); do echo SCROLLBACK-MARKER-$i; done");
+    p.wait_for("SCROLLBACK-MARKER-80", Duration::from_secs(5));
+
+    p.send_raw("echo HALF-TYPED-COMMAND");
+    std::thread::sleep(Duration::from_millis(400));
+    p.send_raw("C-l");
+    std::thread::sleep(Duration::from_millis(400));
+
+    let pane = p.capture();
+    assert!(
+        pane.contains("echo HALF-TYPED-COMMAND"),
+        "Ctrl-L must preserve the in-progress line, not just clear the screen\n{pane}"
+    );
+
+    let history = p.capture_history(500);
+    assert!(
+        !history.contains("SCROLLBACK-MARKER"),
+        "Ctrl-L must also drop scrollback (ama.bash does this too), \
+         not just clear the visible screen\n{history}"
+    );
+}
+
+/// The zsh equivalent of ama.bash's `an_existing_c_m_binding_is_chained_
+/// not_clobbered` (RISK-03): a pre-existing `accept-line` customization --
+/// as e.g. a completion or autosuggestion framework would install -- must
+/// survive `ama init zsh`, and survive repeated `eval`s of it in the same
+/// shell (the zsh equivalent of R18 finding 3). zsh has no `bind -s`-style
+/// text to scrape; `ama.zsh` instead saves the previous widget under
+/// `__ama_orig_accept_line` via `zle -A` and checks `$widgets` before
+/// re-saving.
+///
+/// The failure mode behind an unconditional (non-idempotent) `zle -A` is
+/// *not* "silently overwritten" the way bash's bare `\C-m` rebind is, and
+/// it is not an immediate hang either -- both guesses tried and rejected
+/// while developing this integration, in favour of driving real zsh: one
+/// extra `eval` merely adds one harmless level of indirection (confirmed
+/// by instrumenting `__ama_accept_line` directly: exactly one nested call,
+/// not a runaway chain). It takes a handful of repeated installs -- e.g. a
+/// user re-sourcing their rc file a few times over a session -- before the
+/// self-referential alias actually recurses deeply enough to hit zsh's own
+/// recursion guard, surfacing as `__ama_split:...: maximum nested function
+/// level reached` on stderr and the probe never running again (reproduced
+/// directly: 1 extra install is silent, 2 already prints the error). Four
+/// installs is comfortably past that threshold without depending on the
+/// exact number, so that is what this test does, asserting the error
+/// string never appears and the probe still fires after all of them --
+/// which only holds if every install after the first was a genuine no-op.
+#[test]
+fn an_existing_accept_line_widget_is_chained_not_clobbered_in_zsh() {
+    require_tmux!();
+    if !have("zsh") {
+        eprintln!("skipping: zsh not installed");
+        return;
+    }
+    let probe = "__ama_e2e_probe_accept_line() { print -r -- CHAIN-PROBE-RAN; zle .accept-line; }\n\
+                 zle -N accept-line __ama_e2e_probe_accept_line\n";
+    let p = Pane::start_with_extra_rc("ama-e2e-zsh-chain", "zsh", probe);
+
+    p.send("true");
+    let pane = p.wait_for("CHAIN-PROBE-RAN", Duration::from_secs(5));
+    assert!(
+        pane.contains("CHAIN-PROBE-RAN"),
+        "a pre-existing accept-line widget must be chained, not clobbered\n{pane}"
+    );
+
+    // Re-`eval "$(ama init zsh)"` several times in the same shell, exactly
+    // as repeatedly re-sourcing an rc file would.
+    for _ in 0..4 {
+        p.send(r#"eval "$(ama init zsh)""#);
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let pane = p.capture();
+    assert!(
+        !pane.contains("maximum nested function level"),
+        "each re-install after the first must be a no-op, not one more \
+         layer of self-referential chaining\n{pane}"
+    );
+
+    // Reset the screen so the next appearance can only be explained by the
+    // `true` below, not by earlier probe output still sitting on screen.
+    p.send("clear");
+    std::thread::sleep(Duration::from_millis(300));
+    let cleared = p.capture();
+    assert!(
+        !cleared.contains("CHAIN-PROBE-RAN"),
+        "sanity check: clear should have wiped the pane\n{cleared}"
+    );
+
+    p.send("true");
+    let pane = p.wait_for("CHAIN-PROBE-RAN", Duration::from_secs(5));
+    assert!(
+        pane.contains("CHAIN-PROBE-RAN"),
+        "the pre-existing widget must still be chained after repeated installs\n{pane}"
     );
 }
