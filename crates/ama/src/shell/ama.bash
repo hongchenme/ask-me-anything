@@ -10,10 +10,14 @@ __ama_sq() {
 # Split a line into prefix and prompt at the trigger.
 # Prints "<prefix><US><prompt>" and returns 0 when the line is triggered,
 # where <US> is the 0x1f unit separator. Returns 1 otherwise.
-# Recognition order is fixed (ADR-006): line start wins over an operator,
-# so "@@ compare a && @@ b" is one prompt, not two.
+# Recognition order is fixed (ADR-006, amended by A-03): line start wins
+# over an operator, and among operator-triggered lines the FIRST trigger
+# wins. So both "@@ compare a && @@ b" and "clear && @@ compare a && @@ b"
+# keep "compare a && @@ b" whole, as one prompt — POSIX ERE has no lazy
+# quantifier, so this is done with parameter expansion (shortest/longest
+# match), not a greedy regex.
 __ama_split() {
-    local line=$1 lead trimmed
+    local line=$1 lead trimmed head tail_re
     lead=${line%%[![:space:]]*}
     trimmed=${line#"$lead"}
 
@@ -21,10 +25,13 @@ __ama_split() {
         printf '%s\x1f%s' "$lead" "${trimmed#'@@ '}"
         return 0
     fi
-    local re='^(.*[;&|][[:space:]]*)@@ (.*)$'
-    if [[ $line =~ $re ]]; then
-        printf '%s\x1f%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
-        return 0
+    if [[ $line == *"@@ "* ]]; then
+        head=${line%%"@@ "*}
+        tail_re='[;&|][[:space:]]*$'
+        if [[ $head =~ $tail_re ]]; then
+            printf '%s\x1f%s' "$head" "${line#*"@@ "}"
+            return 0
+        fi
     fi
     return 1
 }

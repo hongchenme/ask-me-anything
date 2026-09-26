@@ -45,7 +45,11 @@ fn roundtrips_shell_metacharacters_literally() {
 
 proptest::proptest! {
     #[test]
-    fn roundtrips_arbitrary_strings(s in ".{0,200}") {
+    // (?s) makes `.` match newlines too (regex-syntax defaults to excluding
+    // them). Newlines are reachable input here — bracketed paste delivers
+    // them, see survives_an_embedded_newline_from_bracketed_paste — so the
+    // swept domain must include them.
+    fn roundtrips_arbitrary_strings(s in "(?s).{0,200}") {
         // NUL cannot occur here: it cannot be a process argument (execve
         // requires NUL-terminated C strings — std::process::Command
         // rejects it before bash even runs) and it cannot live in a bash
@@ -81,7 +85,10 @@ fn recognises_triggers_at_command_positions() {
         split("clear && @@ show me the joke of the day"),
         Some(("clear && ".into(), "show me the joke of the day".into()))
     );
-    assert_eq!(split("cd /tmp; @@ where am i"), Some(("cd /tmp; ".into(), "where am i".into())));
+    assert_eq!(
+        split("cd /tmp; @@ where am i"),
+        Some(("cd /tmp; ".into(), "where am i".into()))
+    );
 }
 
 #[test]
@@ -90,6 +97,14 @@ fn line_start_wins_over_a_later_operator() {
     assert_eq!(
         split("@@ compare a && @@ b"),
         Some((String::new(), "compare a && @@ b".into()))
+    );
+}
+
+#[test]
+fn the_first_trigger_wins_even_behind_a_prefix() {
+    assert_eq!(
+        split("clear && @@ compare a && @@ b"),
+        Some(("clear && ".into(), "compare a && @@ b".into()))
     );
 }
 
