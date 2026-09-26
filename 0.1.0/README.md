@@ -19,11 +19,12 @@ terminal, to the user's own agent CLI and streams the answer back inline.
 
 | | |
 |---|---|
-| **Stage** | S3 — plan and partition |
-| **Gate** | SG3, awaiting owner approval of the implementation plan |
+| **Stage** | S4 — build and integrate (complete) |
+| **Gate** | SG4, pending the independent whole-branch review |
 | **Risk tier** | R1 (see [risk register](02-discovery-and-risk.md#4-risk-register)) |
-| **Next action** | Owner approves the plan and selects an execution method; then S4 build |
+| **Next action** | Whole-branch review, then S5 verification |
 | **Blockers** | None |
+| **Evidence** | `./check.sh` green · 110 tests · NFR-01 measured at 7.0 ms median vs a 50 ms budget |
 
 ## Artifact map
 
@@ -33,8 +34,8 @@ terminal, to the user's own agent CLI and streams the answer back inline.
 | S1 | [02-discovery-and-risk.md](02-discovery-and-risk.md) | accepted |
 | S2 | [03-product-requirements.md](03-product-requirements.md) | accepted (amended A-01) |
 | S2 | [04-design.md](04-design.md) | accepted (amended A-02) |
-| S3 | [05-implementation-plan.md](05-implementation-plan.md) | in review |
-| S4 | `06-build-record.md` | not started |
+| S3 | [05-implementation-plan.md](05-implementation-plan.md) | accepted |
+| S4 | [06-build-record.md](06-build-record.md) | complete |
 | S5 | `07-verification.md` | not started |
 | S6 | `08-release.md` | not started |
 | S7 | `09-operations.md` | not started |
@@ -46,7 +47,8 @@ terminal, to the user's own agent CLI and streams the answer back inline.
 | SG0 — Intent accepted | 2026-09-26 | Accepted | Problem worth discovery |
 | SG1 — Discovery accepted | 2026-09-26 | Accepted | R1 tier and RISK-01 acceptance approved |
 | SG2 — Specification accepted | 2026-09-26 | Accepted | Amended twice during S3, below |
-| SG3 — Plan approved | — | Pending | Awaiting owner review of the plan |
+| SG3 — Plan approved | 2026-09-26 | Accepted | Owner chose subagent-driven execution |
+| SG4 — Build complete | — | Pending | All 10 tasks implemented and task-reviewed; awaiting the independent whole-branch review |
 
 ## Amendments
 
@@ -85,13 +87,10 @@ real `bash -i` inside real `tmux` on the target machine:
 - `tmux capture-pane -p` returns the visible screen including other commands' output,
   and returns nothing after `clear` (F-04).
 
-## Known documentation debt
+## Documentation debt — cleared
 
-The root [README.md](../README.md) needs two corrections before release, both
-consequences of accepted decisions rather than changes of scope:
-
-1. Examples render the executed line unquoted (`@@ what's this project all about?`).
-   Under ADR-001 it executes as `@@ 'what'\''s this project all about?'`.
-2. The tool is named `aka` throughout; ADR-005 renames it `ama`.
-
-Tracked as a task in S3 so the docs and the binary ship consistent.
+Both corrections landed in Task 10 (`1e01087`): the root [README.md](../README.md) now
+says `ama` throughout, and its examples show the quoted line that actually executes.
+A third correction was found during that task and fixed at the same time — the README
+had documented `@@ --no-context`, which does not work, because the trigger path joins
+all arguments into the question. It now documents `ama ask --no-context -- <question>`.
