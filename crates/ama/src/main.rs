@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
 
-fn main() {
-    println!("ama 0.1.0");
+fn main() -> std::process::ExitCode {
+    ama::cli::run()
 }
