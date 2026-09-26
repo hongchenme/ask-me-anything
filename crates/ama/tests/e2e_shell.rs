@@ -87,7 +87,23 @@ impl Pane {
         std::fs::write(&rc, body).expect("rc");
 
         let cmd = match shell {
-            "zsh" => format!("ZDOTDIR={} zsh -i", home.display()),
+            // `-d` (--no-globalrcs) skips /etc/zsh/*, not $ZDOTDIR/.zshrc.
+            //
+            // ZDOTDIR does not isolate a test from the *global* startup
+            // files, and Debian/Ubuntu's /etc/zsh/zshrc runs `compinit`.
+            // On a GitHub runner the completion directories are
+            // group-writable, so compinit emits
+            // `zsh compinit: insecure directories` and waits -- swallowing
+            // the keys the harness then sends, so every zsh test times out.
+            // This machine has no /etc/zsh at all, which is why it only
+            // showed up in CI.
+            //
+            // Isolating is also the right default for these tests: they
+            // exist to prove *our* hook works in a real interactive zsh,
+            // not to re-test whatever a distro puts in its global rc.
+            // Coexistence with someone else's widget is covered separately
+            // by the chaining test.
+            "zsh" => format!("ZDOTDIR={} zsh -d -i", home.display()),
             _ => format!("bash --rcfile {} -i", rc.display()),
         };
         if shell == "zsh" {
