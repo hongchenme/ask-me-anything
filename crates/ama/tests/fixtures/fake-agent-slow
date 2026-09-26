@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+cat >/dev/null
+echo "first"
+sleep 3
+echo "second"

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+cat >/dev/null
+echo "agent exploded" >&2
+exit 7

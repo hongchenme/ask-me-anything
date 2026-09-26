@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Echoes the prompt it received on stdin, so tests can assert on composition.
+cat
