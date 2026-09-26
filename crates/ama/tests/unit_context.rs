@@ -232,3 +232,42 @@ fn an_empty_context_omits_the_terminal_section_entirely() {
     assert!(!out.contains("## Terminal"), "no empty section: {out}");
     assert!(out.contains("hello"));
 }
+
+// ---- REQ-34 / ADR-008: the preamble (0.1.1) --------------------------------
+
+/// Each clause below was added in response to a measured failure, and each
+/// is cheap to lose in a later reword. Pinning them by name means a reword
+/// that drops one fails here rather than silently restoring defect 1 --
+/// which no test can catch, because it only shows up as a live agent
+/// declining to answer.
+#[test]
+fn the_preamble_tells_the_agent_to_use_its_tools() {
+    let out = prompt::compose(&[], "what's the weather");
+    for clause in [
+        // Counters the "was there something coding or project-related I can
+        // help with instead?" refusal an agent's own persona produces.
+        "not only a coding assistant",
+        // A granted tool the agent never reaches for fixes nothing (F-08).
+        "use those tools before answering anything you do not already know",
+        // The exact false claim in the defect report.
+        "never say you lack internet access or tools without having tried",
+        // The reported question carries no location; asking for one is the
+        // right answer, and without this the agent invented an incapacity.
+        "ask for just that",
+    ] {
+        assert!(out.contains(clause), "preamble lost {clause:?}:\n{out}");
+    }
+}
+
+/// Agent-neutral by construction: `ama` is BYOA, so naming one vendor's
+/// tool would read as nonsense to codex, ollama, or a local model.
+#[test]
+fn the_preamble_names_capabilities_not_vendor_tools() {
+    let out = prompt::compose(&[], "hello");
+    for vendor in ["WebSearch", "WebFetch", "Claude", "claude"] {
+        assert!(
+            !out.contains(vendor),
+            "the preamble must not name {vendor:?}:\n{out}"
+        );
+    }
+}
