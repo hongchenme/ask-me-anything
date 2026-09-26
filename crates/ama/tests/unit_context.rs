@@ -33,10 +33,13 @@ fn a_pane_with_no_trigger_yields_no_context() {
 }
 
 #[test]
-fn a_trigger_inside_the_agents_own_answer_does_not_start_the_context() {
-    // The agent explained the tool, so its answer contains "@@ ". Slicing must
-    // not treat that as the start of the conversation -- doing so would cut the
-    // real first question out of the context.
+fn the_whole_conversation_from_the_first_question_down_is_context() {
+    // The agent explained the tool, so its answer contains "@@ ". This pins
+    // the slice's start and length when the real question is already the
+    // first line, but that placement means `position()`'s leftmost match
+    // lands there regardless of the `is_answer_line` guard -- it does NOT
+    // exercise the guard. `a_stray_answer_fragment_before_the_real_trigger_does_not_pollute_the_start`
+    // below is the test that does.
     let pane = lines(
         "user@host:~$ @@ 'how do i use this'\n\
          🤖: type @@ followed by a space, like\n   \

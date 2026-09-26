@@ -122,3 +122,51 @@ pub fn gather(source: Source, key: &SessionKey, max: usize) -> Vec<String> {
     };
     cap(&lines, max).to_vec()
 }
+
+#[cfg(test)]
+mod tests {
+    // `decode_lines` stays private -- captured pane bytes are never valid
+    // UTF-8 by construction (progress bars, odd file names, partial escape
+    // sequences can all clip a multi-byte character), so the no-panic
+    // property (Review Focus 3) is pinned here directly rather than only
+    // resting on `from_utf8_lossy`'s documented guarantee.
+    use super::decode_lines;
+
+    #[test]
+    fn a_lone_continuation_byte_is_replaced_without_panicking() {
+        // 0x80 is a continuation byte with no leading byte -- invalid on its
+        // own, a single-byte maximal invalid subpart.
+        let got = decode_lines(b"before\x80after\n");
+        assert_eq!(got.len(), 1, "got {got:?}");
+        assert_eq!(got[0], "before\u{FFFD}after");
+    }
+
+    #[test]
+    fn a_truncated_multibyte_sequence_is_replaced_without_panicking() {
+        // 0xE2 0x82 is the first two bytes of '€' (U+20AC, 3 bytes); cut
+        // short and followed by an ASCII byte that cannot extend it.
+        let got = decode_lines(b"mid\xE2\x82end\n");
+        assert_eq!(got.len(), 1, "got {got:?}");
+        assert_eq!(got[0], "mid\u{FFFD}end");
+    }
+
+    #[test]
+    fn an_interrupted_escape_sequence_around_an_invalid_byte_does_not_panic() {
+        // An ANSI CSI sequence cut off before its final byte (no `m`),
+        // immediately followed by 0xFF, which is never valid UTF-8 in any
+        // position. The escape bytes are plain ASCII, so they survive
+        // decoding as literal (non-printable) characters, same as a real
+        // captured pane would carry them.
+        let got = decode_lines(b"before\x1b[31\xFFafter\n");
+        assert_eq!(got.len(), 1, "got {got:?}");
+        assert_eq!(got[0], "before\u{1b}[31\u{FFFD}after");
+    }
+
+    #[test]
+    fn the_final_line_survives_with_no_trailing_newline() {
+        let got = decode_lines(b"first\nsecond line no newline\xFF");
+        assert_eq!(got.len(), 2, "got {got:?}");
+        assert_eq!(got[0], "first");
+        assert_eq!(got[1], "second line no newline\u{FFFD}");
+    }
+}
