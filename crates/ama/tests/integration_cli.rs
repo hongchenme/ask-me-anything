@@ -357,3 +357,47 @@ fn eval_ing_the_script_in_a_sourced_rcfile_does_not_skip_the_rest_of_that_file()
                 .and(predicates::str::contains("AFTER_SOURCE_CALL")),
         );
 }
+
+#[test]
+fn doctor_reports_every_field_and_succeeds_when_healthy() {
+    let (d, cfg) = env();
+    let out = ama(&cfg, d.path()).arg("doctor").output().expect("run");
+    let text = String::from_utf8_lossy(&out.stdout);
+    for field in [
+        "config",
+        "session",
+        "context",
+        "transcript",
+        "agent",
+        "status",
+    ] {
+        assert!(
+            text.contains(field),
+            "doctor must report `{field}`:\n{text}"
+        );
+    }
+    assert!(out.status.success());
+}
+
+#[test]
+fn doctor_fails_when_the_agent_is_not_installed() {
+    let d = tempfile::tempdir().expect("tempdir");
+    let cfg = d.path().join("config.yml");
+    std::fs::write(&cfg, "agent: definitely-not-installed\n").expect("write");
+    ama(&cfg, d.path())
+        .arg("doctor")
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("definitely-not-installed"));
+}
+
+#[test]
+fn doctor_names_the_context_source_it_would_use() {
+    let (d, cfg) = env();
+    let out = ama(&cfg, d.path()).arg("doctor").output().expect("run");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("transcript"),
+        "outside tmux the source must be named:\n{text}"
+    );
+}
