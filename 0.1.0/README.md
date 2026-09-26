@@ -19,10 +19,10 @@ terminal, to the user's own agent CLI and streams the answer back inline.
 
 | | |
 |---|---|
-| **Stage** | S4 — build and integrate (complete) |
-| **Gate** | SG4, pending the independent whole-branch review |
+| **Stage** | S5 — verify and evaluate |
+| **Gate** | SG4 passed. SG5 pending owner review of the verification record |
 | **Risk tier** | R1 (see [risk register](02-discovery-and-risk.md#4-risk-register)) |
-| **Next action** | Whole-branch review, then S5 verification |
+| **Next action** | Owner reviews [07-verification.md](07-verification.md) and decides on release |
 | **Blockers** | None |
 | **Evidence** | `./check.sh` green · 124 tests (110 at the end of S4, plus 14 from the whole-branch review's fix wave) · NFR-01 measured at 7.0 ms median vs a 50 ms budget |
 
@@ -36,7 +36,7 @@ terminal, to the user's own agent CLI and streams the answer back inline.
 | S2 | [04-design.md](04-design.md) | accepted (amended A-02) |
 | S3 | [05-implementation-plan.md](05-implementation-plan.md) | accepted |
 | S4 | [06-build-record.md](06-build-record.md) | complete |
-| S5 | `07-verification.md` | not started |
+| S5 | [07-verification.md](07-verification.md) | in review |
 | S6 | `08-release.md` | not started |
 | S7 | `09-operations.md` | not started |
 
@@ -48,7 +48,8 @@ terminal, to the user's own agent CLI and streams the answer back inline.
 | SG1 — Discovery accepted | 2026-09-26 | Accepted | R1 tier and RISK-01 acceptance approved |
 | SG2 — Specification accepted | 2026-09-26 | Accepted | Amended twice during S3, below |
 | SG3 — Plan approved | 2026-09-26 | Accepted | Owner chose subagent-driven execution |
-| SG4 — Build complete | — | Pending | All 10 tasks implemented and task-reviewed; awaiting the independent whole-branch review |
+| SG4 — Build complete | 2026-09-26 | Passed | Whole-branch review returned 0 Critical, 5 Important; all fixed and re-verified in one fix wave |
+| SG5 — Verification accepted | — | Pending | Owner reviews the verification record |
 
 ## Amendments
 
