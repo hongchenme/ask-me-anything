@@ -271,3 +271,36 @@ fn the_preamble_names_capabilities_not_vendor_tools() {
         );
     }
 }
+
+// ---- RISK-18: frames the user's own keys left on screen (0.1.2) -----------
+
+/// Every frame is erased before the answer starts, but a key pressed while the
+/// moon is up can strand one: Enter moves the cursor down beneath it, and
+/// Ctrl-C leaves `🤖 🌓^C` behind (RISK-15). Captured as-is, those lines would
+/// reach the agent as if the user had typed them.
+#[test]
+fn moon_frames_stranded_on_screen_are_not_context() {
+    let pane = lines(
+        "T$ @@ 'whats weather?'\n\
+         🤖 🌔\n\
+         🤖 🌑\n\
+         🤖: Which city?\n\
+         T$ @@ 'slow one'\n\
+         🤖 🌓^C\n\
+         the 🌕 is full tonight\n\
+         T$ @@ 'second'",
+    );
+    assert_eq!(
+        context::without_moon_frames(pane),
+        lines(
+            "T$ @@ 'whats weather?'\n\
+             🤖: Which city?\n\
+             T$ @@ 'slow one'\n\
+             ^C\n\
+             the 🌕 is full tonight\n\
+             T$ @@ 'second'"
+        ),
+        "a bare frame goes; a frame's leftovers (^C, echoed keys) stay; \
+         a moon anywhere but a frame is just text"
+    );
+}

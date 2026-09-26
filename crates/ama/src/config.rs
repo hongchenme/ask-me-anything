@@ -68,10 +68,20 @@ pub struct Config {
     pub agent: AgentConfig,
     #[serde(default = "default_max_context_lines")]
     pub max_context_lines: usize,
+    /// REQ-39 / ADR-013: `false` turns off the moon shown while the agent
+    /// thinks -- and with it the stderr routing the moon needs (ADR-012),
+    /// giving back 0.1.1's output exactly. A real `bool`, so `spinner: off`
+    /// is a parse error rather than a guess at what was meant.
+    #[serde(default = "default_spinner")]
+    pub spinner: bool,
 }
 
 fn default_max_context_lines() -> usize {
     200
+}
+
+fn default_spinner() -> bool {
+    true
 }
 
 #[derive(Debug, thiserror::Error)]
